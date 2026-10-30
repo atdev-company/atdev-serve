@@ -56,8 +56,9 @@ import torch
 OPT_NAME = "drafter_w4"
 SUPPORTED_VLLM_VERSION = "0.31.0"
 SRC_REPO = "z-lab/Qwen3.8-27B-DFlash2"
-# Default quantized drafter: the release checkpoint on the HF Hub (local dir or repo id accepted).
-DEFAULT_OUT = "atdev-company/Qwen3.8-27B-atdev-DFlash2-d16"
+# Default quantized drafter: the release checkpoint on the HF Hub, subfolder drafter/ of the c1 repo
+# (a local dir, ``org/name`` or ``org/name:subfolder/`` is accepted, see atdev_serve.hub).
+DEFAULT_OUT = "atdev-company/Qwen3.8-27B-atdev-c1:drafter/"
 
 log = logging.getLogger("atdev_serve.drafter_w4")
 
@@ -300,7 +301,7 @@ def quantization_config(spec: QuantSpec) -> dict:
 
 
 def quant_path() -> str:
-    """Quantized drafter dir; ATDEV_DRAFTER_QUANT_PATH may be a local dir or an HF repo id."""
+    """Quantized drafter dir; ATDEV_DRAFTER_QUANT_PATH may be a local dir or an HF spec (org/name[:folder/])."""
     from atdev_serve.hub import resolve_dir
 
     return resolve_dir(os.environ.get("ATDEV_DRAFTER_QUANT_PATH", DEFAULT_OUT))

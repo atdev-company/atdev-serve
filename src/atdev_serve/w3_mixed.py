@@ -12,8 +12,10 @@ paths, chosen by ATDEV_W3_KERNEL:
 
 Env:
   ATDEV_W3_SIDECAR   comma-separated sidecar files (later files win per tensor); each entry may also be
-                     an HF repo id ``org/name[@rev]`` (all *.safetensors of the repo, sorted) or
-                     ``org/name[@rev]:file.safetensors`` (atdev_serve.hub)
+                     an HF spec ``org/name[@rev]`` (all *.safetensors at the repo root, sorted),
+                     ``org/name[@rev]:folder/`` (all *.safetensors in that subfolder, sorted, e.g.
+                     ``atdev-company/Qwen3.8-27B-atdev-c1:w3/``) or ``org/name[@rev]:path/file.safetensors``
+                     (atdev_serve.hub)
   ATDEV_W3_LAYERS    optional regex on checkpoint tensor names (e.g. 'linear_attn|mlp') to use a subset
   ATDEV_W3_KERNEL    1 (default) / 0
   ATDEV_W3_CONFIG    optional json {"N,K": {"<M bucket>": [tk, tn, threads, stages, bps, max_tmb]}};

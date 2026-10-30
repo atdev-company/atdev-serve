@@ -28,6 +28,9 @@ The GPU must be free: the server reserves 90% of its memory.
 
 ## 2. Choose a stack
 
+The two stacks are named after the load they are tuned for: **c1** for c=1, i.e. 1 client (a single
+user, one request at a time), and **c32** for c=32, i.e. 32 concurrent clients (32 requests in flight).
+
 | if you... | run | what you get |
 |---|---|---|
 | serve one user at a time, or a few, and care about how fast each answer streams | **c1** (`serve_c1.sh`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings) |
@@ -186,8 +189,8 @@ yours first):
 
 ```bash
 source atdev-env.sh
-bench/run_bench.sh c1 results/my_c1       # prints mean / median decode tok/s per request
-bench/run_bench.sh c32 results/my_c32     # prints aggregate tok/s
+bench/run_bench.sh c1 results/my_c1       # c=1 (1 client): prints mean / median decode tok/s per request
+bench/run_bench.sh c32 results/my_c32     # c=32 (32 concurrent clients): prints aggregate tok/s
 ```
 
 You should get numbers close to the README (within a few percent on an A100 80GB SXM).
@@ -207,7 +210,7 @@ You should get numbers close to the README (within a few percent on an A100 80GB
 | `unknown ATDEV_OPT entries` | typo in `ATDEV_OPT` | use the names in the launch scripts |
 | No `enabled optimizations` line in the log | the plugin is not installed in the Python that runs `vllm` | `which vllm` should point into your venv. Run `source atdev-env.sh` |
 | `401` / `403` / `RepositoryNotFound` from Hugging Face | no access to a model repo | `huggingface-cli login` (or set `HF_TOKEN`) and check the repo names in `serve_c1.sh` |
-| Offline machine | models cannot download | download them elsewhere and pass local paths: `MODEL=/models/Qwen3.8-27B-INT4 W3_OVERLAY=/models/w3/w3_gptqact_d30_mlpo.safetensors,/models/w3/w3_gptqact_d30_qkv.safetensors DRAFTER=/models/d16 HF_HUB_OFFLINE=1 ./serve_c1.sh`. c1 also reads the config of `z-lab/Qwen3.8-27B-DFlash2`, so pre-download it into `HF_HOME` first (`huggingface-cli download z-lab/Qwen3.8-27B-DFlash2`) |
+| Offline machine | models cannot download | download them elsewhere and pass local paths: `huggingface-cli download atdev-company/Qwen3.8-27B-atdev-c1 --local-dir /models/atdev-c1` (and the same for `RedHatAI/Qwen3.8-27B-INT4`), then `MODEL=/models/Qwen3.8-27B-INT4 W3_OVERLAY=/models/atdev-c1/w3/w3_gptqact_d30_mlpo.safetensors,/models/atdev-c1/w3/w3_gptqact_d30_qkv.safetensors DRAFTER=/models/atdev-c1/drafter HF_HUB_OFFLINE=1 ./serve_c1.sh`. c1 also reads the config of `z-lab/Qwen3.8-27B-DFlash2`, so pre-download it into `HF_HOME` first (`huggingface-cli download z-lab/Qwen3.8-27B-DFlash2`) |
 | Docker: `could not select device driver "nvidia"` | NVIDIA Container Toolkit missing | install it and restart Docker |
 | Slower than expected | different GPU, another job on the GPU, or measurement with `temperature > 0` | run `bench/run_bench.sh` on an idle A100 80GB |
 
@@ -221,8 +224,9 @@ The launch scripts read these environment variables:
 | `SERVED_NAME` | `m` | the model name the API reports |
 | `CUDA_VISIBLE_DEVICES` | 0 | which GPU to use |
 | `MODEL` | `RedHatAI/Qwen3.8-27B-INT4` | target checkpoint (HF id or local path) |
-| `W3_OVERLAY` (c1) | `atdev-company/Qwen3.8-27B-atdev-W3-overlay` | 3-bit overlay (HF id or local `.safetensors` paths) |
-| `DRAFTER` (c1) | `atdev-company/Qwen3.8-27B-atdev-DFlash2-d16` | drafter (HF id or local dir) |
+| `HF_REPO` (c1) | `atdev-company/Qwen3.8-27B-atdev-c1` | HF repo with the c1 model-side files (subfolders `w3/`, `drafter/`) |
+| `W3_OVERLAY` (c1) | `$HF_REPO:w3/` | 3-bit overlay: `repo:folder/`, `repo:path/file.safetensors`, or comma-separated local `.safetensors` paths |
+| `DRAFTER` (c1) | `$HF_REPO:drafter/` | drafter: `repo:folder/` or a local dir |
 | `HF_HOME` | `~/.cache/huggingface` | model download cache |
 | `TORCH_EXTENSIONS_DIR` | `~/.cache/torch_extensions` | compiled kernel cache |
 

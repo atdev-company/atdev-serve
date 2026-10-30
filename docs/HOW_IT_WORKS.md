@@ -2,7 +2,9 @@
 
 This page explains what the engine does in each decode step and why it is faster than the best stock
 vLLM 0.31.0 configuration. The effects quoted here come from same-session A/B runs during
-development (see [BENCHMARKS.md](BENCHMARKS.md) for the method).
+development (see [BENCHMARKS.md](BENCHMARKS.md) for the method). Throughout, c=N means N concurrent
+clients: c=1 is 1 client (a single user, one request at a time), c=32 is 32 concurrent clients (32
+requests in flight).
 
 ## Background: where the time goes
 
@@ -22,13 +24,13 @@ The step time measured with the torch profiler:
   <img alt="Step-time breakdown: c=1 engine only 15.8 ms, c=1 full stack 12.7 ms, c=32 full stack 22.5 ms" src="img/step_breakdown.svg">
 </picture>
 
-* At c=1 the target weight GEMMs take about 72% of the step. Their size cannot shrink without
+* At c=1 (1 client) the target weight GEMMs take about 72% of the step. Their size cannot shrink without
   changing the weights, which is why the full stack adds 3-bit weights. Everything else (GDN,
   attention, heads, drafter) was cut kernel by kernel.
-* At c=32 the step verifies about 96 rows, so the GEMMs become compute-heavy. W4A4 (4-bit
+* At c=32 (32 concurrent clients) the step verifies about 96 rows, so the GEMMs become compute-heavy. W4A4 (4-bit
   activations on tensor cores) is the biggest lever there, followed by the GDN kernels.
 
-## The c=1 stack (`serve_c1.sh`)
+## The c=1 stack (`serve_c1.sh`, tuned for 1 client)
 
 ### Tree verification with a block-16 drafter
 
@@ -96,10 +98,13 @@ outputs come from the exact path. (+7.5%)
 | d16 drafter (`drafter_w4`) | re-trained DFlash2, block 16, W4A16 (fc in int8) | int4 drafter: +3.3%; block 16: +3.8% |
 | split verify head (`verify_split_head`) | verify `lm_head` = int8 rows for the 64k frequent tokens + int4 rows for the rest | +4.4%, then +3.5% (int8 rows) |
 
+The W3 overlay and the drafter are published in one Hugging Face repo,
+[`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1)
+(subfolders `w3/` and `drafter/`); the split verify head is built from the target at load time.
 Because these change numerics, outputs are not token-identical to stock vLLM. The accuracy gates
 (GSM8K-300 / 1319, long-context 36/36) are the acceptance criterion.
 
-## The c=32 stack (`serve_c32.sh`)
+## The c=32 stack (`serve_c32.sh`, tuned for 32 concurrent clients)
 
 With 32 requests in flight a step already has plenty of rows. The goal changes: verify only the
 drafts that are likely to be accepted, and make the large GEMMs cheaper.

@@ -15,7 +15,7 @@ Repository: `https://github.com/atdev-company/atdev-serve`. Human guide: `docs/U
   `CUDA_VISIBLE_DEVICES=<index>` for every command and do not change it afterwards. A busy GPU means
   more than 1 GB already used or any compute process listed by `nvidia-smi`.
 * **R3. Long first start.** The first server start compiles CUDA kernels and downloads model files
-  (about 37 GB for c1, about 19 GB for c32). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
+  (about 37 GB for c1, about 19 GB for c32; the stacks are defined in Phase 1). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
 * **R4. Paths.** Work inside the repository root (`$REPO`). Use absolute paths in your own scripts.
 * **R5. Secrets.** If a Hugging Face token is needed, ask the user to provide it or run
   `huggingface-cli login`. Never print it or write it to files in the repository.
@@ -50,8 +50,9 @@ Run each check and record the result.
 **Choose the install path.** If P7 passes, use **Phase 2A (Docker)**. If not, use **Phase 2B
 (venv)**, which requires P8, P9 and P10 to pass.
 
-**Choose the stack.** Use `c1` (lowest latency per request) unless the user asked for many
-concurrent users or for throughput, in which case use `c32`. Set `STACK=c1` or `STACK=c32`.
+**Choose the stack.** `c1` is tuned for c=1, i.e. 1 client (a single user, one request at a time);
+`c32` is tuned for c=32, i.e. 32 concurrent clients (32 requests in flight). Use `c1` (lowest latency
+per request) unless the user asked for many concurrent users or for throughput, in which case use `c32`. Set `STACK=c1` or `STACK=c32`.
 
 ## Phase 2A: install with Docker
 
@@ -180,7 +181,7 @@ docker compose --profile "$STACK" run --rm "atdev-$STACK" bench/run_bench.sh "$S
 | F6 | log stalls at `Waiting for lock` / `waiting for ... lock` | a stale build lock from an interrupted start. Stop the server, run `find "${TORCH_EXTENSIONS_DIR:-$HOME/.cache/torch_extensions}" -name lock -delete`, and restart |
 | F7 | `CUDA out of memory` while loading | the GPU is not free (P4). Pick another GPU or ask the user (R1) |
 | F8 | `GatedRepoError` / `401` / `RepositoryNotFound` | ask the user for HF access / token (R5), then retry |
-| F9 | no internet | the models must already be local: set `MODEL=<dir>` (and for c1 `W3_OVERLAY=<files>` `DRAFTER=<dir>`) and `HF_HUB_OFFLINE=1` |
+| F9 | no internet | the models must already be local: set `MODEL=<dir>` (and for c1 `W3_OVERLAY=<dir>/w3/w3_gptqact_d30_mlpo.safetensors,<dir>/w3/w3_gptqact_d30_qkv.safetensors` `DRAFTER=<dir>/drafter`, where `<dir>` is a local copy of `atdev-company/Qwen3.8-27B-atdev-c1`) and `HF_HUB_OFFLINE=1` |
 | F10 | Docker build fails on `apt-get` or `pip` | retry once (network). If the base image tag is not found, use `--build-arg CUDA_IMAGE=nvidia/cuda:13.0.0-devel-ubuntu24.04` |
 | F11 | `unsupported GNU version` from nvcc | install a g++ version supported by nvcc 13.0 and export `CC` / `CXX` (R1) |
 | F12 | `unknown ATDEV_OPT entries` | `ATDEV_OPT` was edited by hand. Restore it from the serve script |

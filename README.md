@@ -6,7 +6,9 @@
 - **2.08×** faster than the best stock-vLLM configuration we could find (196.5 → 408.9 tok/s)
 - **4.1×** more throughput at 32 concurrent requests than bf16 on stock vLLM, and **1.55×** more than the best vLLM settings (→ **2,730.9 tok/s**)
 - Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API
-- 🤗 Models on Hugging Face: [W3 overlay](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-W3-overlay) · [DFlash2 drafter](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-DFlash2-d16) (downloaded automatically on first start)
+- 🤗 Model files on Hugging Face: [atdev-company/Qwen3.8-27B-atdev-c1](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) (W3 overlay + DFlash2 drafter, downloaded automatically on first start)
+
+In this README, **c=N means N concurrent clients**: c=1 is 1 client (a single user, one request at a time), c=32 is 32 concurrent clients (32 requests in flight).
 
 > **More models coming.** We are optimizing other widely used open models in the same way and will release them here and on [Hugging Face](https://huggingface.co/atdev-company) as they are ready. Watch or star this repository to get notified.
 
@@ -28,7 +30,7 @@ vLLM server.
 Qwen3.8-27B on 1x A100 80GB, vLLM 0.31.0, greedy decoding, 96 fixed prompts (coding, agentic,
 general, math; 39 in Korean), up to 1024 output tokens each.
 
-| | **single user (c=1)**<br>decode tok/s per request | **32 concurrent requests (c=32)**<br>aggregate output tok/s |
+| | **c=1: 1 client** (single user, one request at a time)<br>decode tok/s per request | **c=32: 32 concurrent clients** (32 requests in flight)<br>aggregate output tok/s |
 |---|---:|---:|
 | Original bf16 model, vLLM defaults | 28.9 | 671.8 |
 | INT4 checkpoint (RedHatAI), vLLM defaults | 74.9 | 1,264.7 |
@@ -39,11 +41,11 @@ general, math; 39 in Korean), up to 1024 output tokens each.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c1-dark.svg">
-  <img alt="c=1 ladder: bf16 default 28.9, INT4 default 74.9, best vLLM 196.5, atdev engine only 284.4, atdev full stack 408.9 tok/s" src="docs/img/ladder_c1.svg">
+  <img alt="c=1 ladder (1 client, one request at a time): bf16 default 28.9, INT4 default 74.9, best vLLM 196.5, atdev engine only 284.4, atdev full stack 408.9 tok/s" src="docs/img/ladder_c1.svg">
 </picture>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c32-dark.svg">
-  <img alt="c=32 ladder: bf16 default 671.8, INT4 default 1264.7, best vLLM 1757.1, atdev engine only 2135.7, atdev full stack 2,730.9 tok/s" src="docs/img/ladder_c32.svg">
+  <img alt="c=32 ladder (32 concurrent clients): bf16 default 671.8, INT4 default 1264.7, best vLLM 1757.1, atdev engine only 2135.7, atdev full stack 2,730.9 tok/s" src="docs/img/ladder_c32.svg">
 </picture>
 
 Two kinds of results are reported separately:
@@ -121,7 +123,7 @@ and the speed comes from accepting many tokens per step while making each step c
 Qwen3.8-27B is a hybrid model: 48 Gated DeltaNet (GDN, linear-attention) layers and 16 full-attention
 layers, so verification needs kernels for both.
 
-### c=1: wide, deep token trees
+### c=1 (1 client, one request at a time): wide, deep token trees
 
 ```mermaid
 flowchart LR
@@ -145,7 +147,7 @@ flowchart LR
 | Re-trained drafter, block 16 (`drafter_w4`) | model-side | DFlash2 self-distilled on the target's outputs, block 16 for depth-15 trees, int4 weights | served tokens/step 4.52 -> 4.68, +3.8% |
 | Split verify head (`verify_split_head`) | model-side | Verify `lm_head`: int8 rows for the 64k frequent tokens, int4 rows for the rest | +4.4%, then int8 rows +3.5% |
 
-### c=32: keep a large batch busy
+### c=32 (32 concurrent clients): keep a large batch busy
 
 ```mermaid
 flowchart LR
@@ -173,6 +175,8 @@ More detail, the step-time breakdown and the full milestone history are in
 
 Greedy decoding, thinking disabled. GSM8K takes the answer from `\boxed{}` (`bench/acc_gsm8k.py`).
 Long-context is 36 passkey / multi-key retrieval items at 2k-6.5k tokens (`bench/acc_longctx.py`).
+"c=1" rows use the settings tuned for 1 client (one request at a time), "c=32" rows the settings tuned
+for 32 concurrent clients.
 
 | configuration | GSM8K (first 300) | GSM8K (all 1319) | long-context |
 |---|---:|---:|---:|
@@ -200,9 +204,9 @@ GPUs are not supported by this release.
 
 ```bash
 pip install aiohttp                                          # or: pip install ".[bench]"
-bench/run_bench.sh vllm_c1  results/vllm_c1                  # best stock vLLM, c=1
+bench/run_bench.sh vllm_c1  results/vllm_c1                  # best stock vLLM, c=1 (1 client)
 bench/run_bench.sh c1       results/atdev_c1                 # atdev full stack, c=1
-bench/run_bench.sh vllm_c32 results/vllm_c32
+bench/run_bench.sh vllm_c32 results/vllm_c32                 # c=32 (32 concurrent clients)
 bench/run_bench.sh c32      results/atdev_c32
 MODEL=Qwen/Qwen3.8-27B bench/run_bench.sh default_c1 results/bf16_default_c1   # bottom rung
 ACC=1 ACC_N=1319 LONGCTX=1 bench/run_bench.sh c1 results/atdev_c1_gate           # accuracy gates
@@ -241,13 +245,14 @@ tools/                        make_charts.py (charts from docs/results.json), bu
 
 ## Model files
 
+Here c=1 means the stack tuned for 1 client (`serve_c1.sh`), and c=32 the stack for 32 concurrent clients.
+
 | | used by | license |
 |---|---|---|
 | [`RedHatAI/Qwen3.8-27B-INT4`](https://huggingface.co/RedHatAI/Qwen3.8-27B-INT4) | both stacks (target) | Apache-2.0 |
 | [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) | bf16 baseline rung only | Apache-2.0 |
 | [`z-lab/Qwen3.8-27B-DFlash2`](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) | c=1 (config; weights replaced by the atdev drafter) | Apache-2.0 |
-| [`atdev-company/Qwen3.8-27B-atdev-W3-overlay`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-W3-overlay) | c=1 | Apache-2.0 |
-| [`atdev-company/Qwen3.8-27B-atdev-DFlash2-d16`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-DFlash2-d16) | c=1 | Apache-2.0 |
+| [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | c=1: `w3/` (3-bit overlay, 12.5 GB) and `drafter/` (re-trained DFlash2 drafter, 1.35 GB) | Apache-2.0 |
 
 The atdev drafter and the W3 calibration used only prompts from
 `HuggingFaceH4/ultrachat_200k` (train_sft) and `openai/gsm8k` (train), with responses generated by

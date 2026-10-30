@@ -7,16 +7,19 @@
 #
 # usage:  ./serve_c1.sh [extra vllm serve args...]
 # env:    MODEL        target checkpoint           (default RedHatAI/Qwen3.8-27B-INT4)
-#         W3_OVERLAY   W3 sidecar: HF repo id, repo:file, or comma-separated local .safetensors files
-#         DRAFTER      quantized drafter: HF repo id or local dir
+#         HF_REPO      HF repo with the model-side files (default atdev-company/Qwen3.8-27B-atdev-c1)
+#         W3_OVERLAY   W3 sidecar (default $HF_REPO:w3/): repo:folder/, repo:file, or comma-separated
+#                      local .safetensors files
+#         DRAFTER      quantized drafter (default $HF_REPO:drafter/): repo:folder/ or local dir
 #         PORT (8100)  SERVED_NAME (m)  PYTHON (python)  VLLM (vllm)  CUDA_VISIBLE_DEVICES (0)
 # The first start JIT-compiles the CUDA kernels (needs nvcc, see README); later starts reuse
 # TORCH_EXTENSIONS_DIR.
 set -euo pipefail
 
 MODEL=${MODEL:-RedHatAI/Qwen3.8-27B-INT4}
-W3_OVERLAY=${W3_OVERLAY:-atdev-company/Qwen3.8-27B-atdev-W3-overlay}
-DRAFTER=${DRAFTER:-atdev-company/Qwen3.8-27B-atdev-DFlash2-d16}
+HF_REPO=${HF_REPO:-atdev-company/Qwen3.8-27B-atdev-c1}  # one repo: w3/ (overlay) + drafter/ (drafter)
+W3_OVERLAY=${W3_OVERLAY:-$HF_REPO:w3/}
+DRAFTER=${DRAFTER:-$HF_REPO:drafter/}
 PORT=${PORT:-8100}
 SERVED_NAME=${SERVED_NAME:-m}
 PYTHON=${PYTHON:-python}
