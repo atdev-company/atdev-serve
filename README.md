@@ -95,6 +95,7 @@ curl http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/jso
 | | `serve_c1.sh` | `serve_c32.sh` |
 |---|---|---|
 | Best for | one user or a few users, lowest latency per request | many simultaneous users, highest total throughput |
+| Typical use cases | local or personal assistant, coding copilot, a single agent running tool calls one after another, interactive chat where response time matters | chatbot or API service for many users, team-wide assistants, multi-agent systems, batch jobs (summarization, extraction, evaluation) |
 | Speculative decoding | re-trained DFlash2 drafter (block 16) + 16-node token-tree verification | built-in MTP head, k=3, confidence-scheduled variable-length verification |
 | Extra downloads | W3 overlay (12.5 GB) + drafter (1.35 GB) | none |
 | Measured at | 1 request in flight | 32 requests in flight |
