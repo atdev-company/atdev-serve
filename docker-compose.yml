@@ -1,0 +1,41 @@
+# One-command start:
+#   docker compose --profile c1 up --build     # single-user stack   (http://127.0.0.1:8100)
+#   docker compose --profile c32 up --build    # 32-concurrent stack (http://127.0.0.1:8100)
+# Env (optional, e.g. in a .env file next to this file):
+#   ATDEV_GPU   host GPU index to use (default 0)      ATDEV_PORT  host port (default 8100)
+#   HF_TOKEN    Hugging Face token, only if your network/account needs one
+# Model downloads and compiled kernels are kept in the named volumes below.
+x-atdev: &atdev
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: atdev-serve:0.1.0
+  ipc: host
+  ports:
+    - "${ATDEV_PORT:-8100}:8100"
+  environment:
+    - HF_TOKEN=${HF_TOKEN:-}
+  volumes:
+    - hf-cache:/root/.cache/huggingface
+    - torch-ext:/root/.cache/torch_extensions
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${ATDEV_GPU:-0}"]
+            capabilities: [gpu]
+
+services:
+  atdev-c1:
+    <<: *atdev
+    profiles: ["c1"]
+    command: ["c1"]
+  atdev-c32:
+    <<: *atdev
+    profiles: ["c32"]
+    command: ["c32"]
+
+volumes:
+  hf-cache:
+  torch-ext:

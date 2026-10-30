@@ -1,0 +1,53 @@
+{
+ "_doc": "c1_fuse x w3_mixed W3 fused-epilogue tile configs, ATDEV_C1_W3_V=2 retune (scripts/bench_e6_w3.py --tune, 2026-10-18; 256-linear set 9099 -> 8971 us vs the default w3_c1_cfg.json). OPT-IN via ATDEV_E6W3_CONFIG=src/atdev_serve/w3_c1_cfg_v2tune.json: other tiles than the default table -> other split-K / warp reduction order (fp32-rounding-level output differences, not bit-identical to the default W3 path). [tk, tn, threads, stages, bps, max_tmb]; gate_up (mode 3) needs tn = 128",
+ "5120,17408": {
+  "16": [
+   256,
+   64,
+   128,
+   4,
+   2,
+   4
+  ]
+ },
+ "34816,5120": {
+  "16": [
+   128,
+   128,
+   128,
+   4,
+   3,
+   4
+  ]
+ },
+ "16384,5120": {
+  "16": [
+   128,
+   128,
+   128,
+   4,
+   2,
+   4
+  ]
+ },
+ "14336,5120": {
+  "16": [
+   128,
+   128,
+   128,
+   4,
+   2,
+   4
+  ]
+ },
+ "5120,6144": {
+  "16": [
+   256,
+   64,
+   128,
+   4,
+   2,
+   4
+  ]
+ }
+}

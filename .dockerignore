@@ -1,0 +1,11 @@
+.git
+.venv
+**/__pycache__
+*.egg-info
+build
+dist
+results
+atdev-env.sh
+warmup_*.log
+src/atdev_serve/csrc/*/gen*
+docs/img

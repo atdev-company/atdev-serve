@@ -1,0 +1,386 @@
+{
+  "_about": "Every number shown in README.md, docs/*.md and docs/img/*. Hardware: 1x NVIDIA A100 80GB (sm_80), vLLM 0.31.0, greedy decoding (temperature 0), 96 fixed prompts (bench/prompts96.jsonl), max_tokens 1024. c=1 = mean per-request decode tok/s over the 96 prompts (2 repetitions); c=32 = aggregate output tok/s of the 96-prompt run at concurrency 32. null = still to be measured / filled (see the 'placeholder' key). Charts: python tools/make_charts.py.",
+  "ladder": {
+    "c1": [
+      {
+        "key": "bf16_default",
+        "label": "Original bf16 model\nvLLM defaults",
+        "kind": "stock",
+        "tps": 28.87,
+        "note": "Qwen/Qwen3.8-27B bf16, vLLM 0.31.0 with no extra flags (no speculative decoding)",
+        "gsm8k_1319": 0.9469,
+        "longctx": "36/36"
+      },
+      {
+        "key": "int4_default",
+        "label": "INT4 checkpoint\nvLLM defaults",
+        "kind": "stock",
+        "tps": 74.9,
+        "note": "RedHatAI/Qwen3.8-27B-INT4, vLLM 0.31.0 with no extra flags (no speculative decoding)",
+        "gsm8k_1319": 0.9431,
+        "longctx": "36/36"
+      },
+      {
+        "key": "best_vllm",
+        "label": "INT4 + best vLLM settings",
+        "kind": "best_vllm",
+        "tps": 196.5,
+        "note": "DFlash2 drafter k=7, drafter fp8, bf16 SSM cache (bench/serve_vllm_c1.sh); best of a sweep over vLLM built-in options",
+        "gsm8k_300": 0.973,
+        "gsm8k_1319": 0.9462,
+        "longctx": "36/36"
+      },
+      {
+        "key": "engine_only",
+        "label": "atdev-serve engine only\n(same model files)",
+        "kind": "engine",
+        "tps": 284.4,
+        "note": "same model files as best vLLM (RedHatAI INT4 + stock z-lab DFlash2); engine features only; 284.4-285.7 across sessions",
+        "gsm8k_300": 0.963,
+        "longctx": "36/36"
+      },
+      {
+        "key": "full_stack",
+        "label": "atdev-serve full stack\n(release models)",
+        "kind": "full",
+        "tps": 408.9,
+        "note": "engine + released W3 overlay + released d16 drafter"
+      }
+    ],
+    "c32": [
+      {
+        "key": "bf16_default",
+        "label": "Original bf16 model\nvLLM defaults",
+        "kind": "stock",
+        "tps": 671.8,
+        "note": "Qwen/Qwen3.8-27B bf16, vLLM 0.31.0 with no extra flags",
+        "gsm8k_1319": 0.9469,
+        "longctx": "36/36"
+      },
+      {
+        "key": "int4_default",
+        "label": "INT4 checkpoint\nvLLM defaults",
+        "kind": "stock",
+        "tps": 1264.7,
+        "note": "RedHatAI/Qwen3.8-27B-INT4, vLLM 0.31.0 with no extra flags",
+        "gsm8k_1319": 0.9431,
+        "longctx": "36/36"
+      },
+      {
+        "key": "best_vllm",
+        "label": "INT4 + best vLLM settings",
+        "kind": "best_vllm",
+        "tps": 1757.1,
+        "note": "built-in MTP k=1, W4A8 (VLLM_MARLIN_INPUT_DTYPE=int8), TRITON_ATTN, bf16 SSM cache, no prefix caching (bench/serve_vllm_c32.sh)",
+        "gsm8k_300": 0.953,
+        "gsm8k_1319": 0.9439,
+        "longctx": "36/36"
+      },
+      {
+        "key": "engine_only",
+        "label": "atdev-serve engine only\n(same model files)",
+        "kind": "engine",
+        "tps": 2135.7,
+        "note": "same model files as best vLLM; engine features only; same-session ratio 1.215x",
+        "gsm8k_1319": 0.9447,
+        "longctx": "36/36"
+      },
+      {
+        "key": "full_stack",
+        "label": "atdev-serve full stack\n(no extra model files)",
+        "kind": "full",
+        "tps": 2730.9,
+        "note": "engine + W4A4 activations on the large verify GEMMs + int4 MTP head + int4 verify-head screen (exact bf16 rescoring)"
+      }
+    ]
+  },
+  "progress": {
+    "_about": "Milestones in development order. Each step was accepted on a same-session A/B against the previous best; the steps were measured in different sessions, so they are a history, not an additive decomposition. Values = tok/s for c=1 (mean, vs 196.5) and ratio vs best vLLM for c=32 (vs 1757.1; the earliest c=32 engine-only rows were measured against 1749-1751).",
+    "c1": [
+      {
+        "label": "best vLLM (DFlash2 chain, k=7)",
+        "kind": "best_vllm",
+        "tps": 196.5
+      },
+      {
+        "label": "tree verification (N=16) + GDN single-state verify + split-KV verify attention",
+        "kind": "engine",
+        "tps": 242.0,
+        "ledger": "EO-c1"
+      },
+      {
+        "label": "+ int4 shadow lm_head + 64k draft vocabulary (candidate selection only)",
+        "kind": "engine",
+        "tps": 260.1,
+        "ledger": "E1-c1-sd4"
+      },
+      {
+        "label": "+ CUDA GDN tree-verify kernel",
+        "kind": "engine",
+        "tps": 266.6,
+        "ledger": "E2-c1-P6"
+      },
+      {
+        "label": "+ tuned Marlin W4A16 tiles (marlin_plus) + ba GEMV",
+        "kind": "engine",
+        "tps": 273.2,
+        "ledger": "E5-mpba"
+      },
+      {
+        "label": "+ norm / SiLU fused into GEMM epilogues + exact drafter fusions",
+        "kind": "engine",
+        "tps": 285.7,
+        "ledger": "E6-bundle"
+      },
+      {
+        "label": "+ re-trained drafter (block 8)",
+        "kind": "full",
+        "tps": 291.4,
+        "ledger": "DG-e2e"
+      },
+      {
+        "label": "+ 3-bit (W3) MLP weights, fused W3 Marlin kernel",
+        "kind": "full",
+        "tps": 308.2,
+        "ledger": "DG-w3f"
+      },
+      {
+        "label": "+ W3 on all 400 linears, split verify head, W4A16 drafter",
+        "kind": "full",
+        "tps": 339.5,
+        "ledger": "DG-stack"
+      },
+      {
+        "label": "+ W3 kernel v2 + retuned tiles",
+        "kind": "full",
+        "tps": 350.2,
+        "ledger": "DG-v2g"
+      },
+      {
+        "label": "+ exact CUDA tree attention + ba projection on a side stream",
+        "kind": "full",
+        "tps": 367.7,
+        "ledger": "TA-ba-stream"
+      },
+      {
+        "label": "+ int8 verify head (64k frequent rows) + exact Triton top-k",
+        "kind": "full",
+        "tps": 379.2,
+        "ledger": "NX-tkx"
+      },
+      {
+        "label": "+ depth-15 tree with block-16 (d16) drafter",
+        "kind": "full",
+        "tps": 396.0,
+        "ledger": "D16-serve"
+      },
+      {
+        "label": "+ graph stream forks, W3 pipeline fill, drafter glue fusions, GDN kernel cuts",
+        "kind": "full",
+        "tps": 412.1,
+        "ledger": "C1gdn3-e2e"
+      },
+      {
+        "label": "release stack (clean-data drafter, W3 overlay, vocab)",
+        "kind": "full",
+        "tps": 408.9
+      }
+    ],
+    "c32": [
+      {
+        "label": "best vLLM (MTP k=1, W4A8)",
+        "kind": "best_vllm",
+        "ratio": 1.0
+      },
+      {
+        "label": "GDN single-state verify + tuned W4A8 Marlin + fused activation quant",
+        "kind": "engine",
+        "ratio": 1.075,
+        "ledger": "EO-c32"
+      },
+      {
+        "label": "+ bit-exact unsigned-nibble W4A8 kernel (U8)",
+        "kind": "engine",
+        "ratio": 1.117,
+        "ledger": "P3-u8"
+      },
+      {
+        "label": "+ GDN verify kernel ss4",
+        "kind": "engine",
+        "ratio": 1.154,
+        "ledger": "P3-gdn-ss4"
+      },
+      {
+        "label": "+ 64k int4 draft vocabulary for MTP (engine-only final: 1.215x same session)",
+        "kind": "engine",
+        "ratio": 1.215,
+        "ledger": "P3-dv4 / P3-mtpk"
+      },
+      {
+        "label": "W4A4 verify GEMMs + fused s4 producers + int8 verify-head tail",
+        "kind": "full",
+        "ratio": 1.251,
+        "ledger": "P1b-fqtail"
+      },
+      {
+        "label": "+ GDN ss4 kernel on the W4A4 stack",
+        "kind": "full",
+        "ratio": 1.312,
+        "ledger": "C32-ss4"
+      },
+      {
+        "label": "+ MTP k=2 with W4A4 M=96/128 buckets",
+        "kind": "full",
+        "ratio": 1.342,
+        "ledger": "C32-k2g"
+      },
+      {
+        "label": "+ argmax-only greedy verify, GDN a4 fold, MTP pruning, fused draft screen",
+        "kind": "full",
+        "ratio": 1.386,
+        "ledger": "C32-x / C32-xp"
+      },
+      {
+        "label": "+ MarlinA4 retune, GDN scale fold, exact c=32 attention kernel",
+        "kind": "full",
+        "ratio": 1.438,
+        "ledger": "C32-xpq / C32-gdn-gs / C32-attn"
+      },
+      {
+        "label": "+ DI1 confidence-scheduled variable-length verify (MTP k=3, 96 rows)",
+        "kind": "full",
+        "ratio": 1.502,
+        "ledger": "DI1-ca"
+      },
+      {
+        "label": "+ split-K gather, consumer-sum epilogues",
+        "kind": "full",
+        "ratio": 1.516,
+        "ledger": "C32d-e2e"
+      },
+      {
+        "label": "+ int4 whole-vocab verify-head screen + exact bf16 rescoring",
+        "kind": "full",
+        "ratio": 1.546,
+        "ledger": "C32e-scr"
+      },
+      {
+        "label": "+ branch-free quant, fused screen top-k, GDN ss12",
+        "kind": "full",
+        "ratio": 1.567,
+        "ledger": "C32z-e2e"
+      },
+      {
+        "label": "release stack (as shipped)",
+        "kind": "full",
+        "ratio": 1.554
+      }
+    ]
+  },
+  "step_breakdown": {
+    "_about": "torch-profiler step breakdowns (ms per decode step). c=1: one step = draft a 16-node tree + verify it; c=32: one step = MTP drafts for all running requests + one batched verify.",
+    "components": [
+      "Target weight GEMMs",
+      "GDN linear attention",
+      "Full attention",
+      "Other target ops",
+      "Verify lm_head",
+      "Drafter",
+      "Host / accept / glue"
+    ],
+    "rows": [
+      {
+        "label": "c=1 engine only\n15.8 ms/step, 4.27 tok/step",
+        "ledger": "E8-c1hl",
+        "ms": [
+          10.22,
+          0.84,
+          0.37,
+          0.62,
+          1.48,
+          1.81,
+          0.43
+        ]
+      },
+      {
+        "label": "c=1 full stack\n12.7 ms/step, 4.68 tok/step",
+        "ledger": "C1-prof",
+        "ms": [
+          9.15,
+          0.85,
+          0.31,
+          0.18,
+          0.53,
+          1.53,
+          0.19
+        ]
+      },
+      {
+        "label": "c=32 full stack\n22.5 ms/step, ~2.44 tok/step/request",
+        "ledger": "C32e-scrprof",
+        "ms": [
+          12.16,
+          4.14,
+          1.14,
+          2.34,
+          0.63,
+          1.81,
+          0.3
+        ]
+      }
+    ]
+  },
+  "gates": {
+    "_about": "Accuracy gates. GSM8K: greedy, thinking disabled, answer from \\boxed{} (bench/acc_gsm8k.py). Long-context: 36 passkey / multi-key retrieval items, 2k-6.5k tokens (bench/acc_longctx.py). Pass rule: GSM8K within 1 point of the stock reference, long-context 36/36.",
+    "rows": [
+      {
+        "config": "Original bf16, vLLM defaults",
+        "gsm8k_300": null,
+        "gsm8k_1319": 0.9469,
+        "longctx": "36/36"
+      },
+      {
+        "config": "INT4, vLLM defaults",
+        "gsm8k_300": null,
+        "gsm8k_1319": 0.9431,
+        "longctx": "36/36"
+      },
+      {
+        "config": "best vLLM, c=1 config",
+        "gsm8k_300": 0.973,
+        "gsm8k_1319": 0.9462,
+        "longctx": "36/36"
+      },
+      {
+        "config": "best vLLM, c=32 config",
+        "gsm8k_300": 0.953,
+        "gsm8k_1319": 0.9439,
+        "longctx": "36/36"
+      },
+      {
+        "config": "atdev engine only, c=1",
+        "gsm8k_300": 0.963,
+        "gsm8k_1319": null,
+        "longctx": "36/36"
+      },
+      {
+        "config": "atdev engine only, c=32",
+        "gsm8k_300": null,
+        "gsm8k_1319": 0.9447,
+        "longctx": "36/36"
+      },
+      {
+        "config": "atdev full stack, c=1 (release)",
+        "gsm8k_300": 0.967,
+        "gsm8k_1319": 0.95,
+        "longctx": "36/36"
+      },
+      {
+        "config": "atdev full stack, c=32 (release)",
+        "gsm8k_300": null,
+        "gsm8k_1319": 0.9401,
+        "longctx": "36/36"
+      }
+    ]
+  }
+}

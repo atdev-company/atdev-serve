@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atdev-serve"
+version = "0.1.0"
+description = "vLLM 0.31.0 plugin: model-specific kernels and speculative-decoding engine features for Qwen3.8-27B on a single A100 80GB"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "vllm==0.31.0",
+  "huggingface_hub",
+  "safetensors",
+  "numpy",
+  "ninja",
+]
+
+[project.optional-dependencies]
+bench = ["aiohttp"]
+
+[project.entry-points."vllm.general_plugins"]
+atdev = "atdev_serve.register:register_all"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# CUDA sources are JIT-compiled at first use (torch.utils.cpp_extension), the JSON files are tuned
+# launch configs, data/token_order.npy is the draft-vocabulary frequency order.
+atdev_serve = [
+  "*.json",
+  "data/*",
+  "csrc/*.cu",
+  "csrc/**/*.cu",
+  "csrc/**/*.cuh",
+  "csrc/**/*.h",
+  "csrc/**/*.hpp",
+  "csrc/**/*.inc",
+]

@@ -1,0 +1,53 @@
+{
+ "_doc": "c1_fuse x w3_mixed: marlin_c1 W3 fused-epilogue tile configs at 8 < M <= 16 [tk, tn, threads, stages, bps, max_tmb] (gate_up mode 3 needs tn = 128); initial = w3_fastdq_cfg.json M=16 entries (down) / tn-128 analogue (gate_up), retune with scripts/bench_e6_w3.py --tune",
+ "5120,17408": {
+  "16": [
+   256,
+   64,
+   128,
+   4,
+   2,
+   4
+  ]
+ },
+ "34816,5120": {
+  "16": [
+   64,
+   128,
+   128,
+   4,
+   3,
+   4
+  ]
+ },
+ "16384,5120": {
+  "16": [
+   64,
+   128,
+   128,
+   4,
+   3,
+   4
+  ]
+ },
+ "14336,5120": {
+  "16": [
+   64,
+   128,
+   128,
+   4,
+   2,
+   4
+  ]
+ },
+ "5120,6144": {
+  "16": [
+   128,
+   128,
+   256,
+   4,
+   1,
+   4
+  ]
+ }
+}

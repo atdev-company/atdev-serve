@@ -1,0 +1,60 @@
+{
+ "_doc": "token_order.npy = descending token frequency in 22.4M target-generated response tokens (16000 responses of Qwen3.8-27B to prompts from HuggingFaceH4/ultrachat_200k train_sft + openai/gsm8k train only, with the authors' own system prompts / answer-language instructions); built with tools/build_draft_vocab.py. Coverage below = share of response tokens inside the first n ids on a separate held-out set of target responses (evaluation only).",
+ "coverage": [
+  {
+   "n": 8192,
+   "coverage": 0.8719175542682884,
+   "per_category": {
+    "agentic": 0.8875,
+    "code": 0.8891,
+    "general": 0.8402,
+    "korean": 0.8293,
+    "math": 0.9221
+   }
+  },
+  {
+   "n": 16384,
+   "coverage": 0.9258621310397492,
+   "per_category": {
+    "agentic": 0.9348,
+    "code": 0.9333,
+    "general": 0.9072,
+    "korean": 0.9109,
+    "math": 0.9573
+   }
+  },
+  {
+   "n": 32768,
+   "coverage": 0.9682010915873495,
+   "per_category": {
+    "agentic": 0.9704,
+    "code": 0.9671,
+    "general": 0.9651,
+    "korean": 0.9685,
+    "math": 0.9829
+   }
+  },
+  {
+   "n": 49152,
+   "coverage": 0.9851326333581565,
+   "per_category": {
+    "agentic": 0.9869,
+    "code": 0.9832,
+    "general": 0.9867,
+    "korean": 0.9857,
+    "math": 0.9914
+   }
+  },
+  {
+   "n": 65536,
+   "coverage": 0.9933748063256735,
+   "per_category": {
+    "agentic": 0.9941,
+    "code": 0.992,
+    "general": 0.9959,
+    "korean": 0.9928,
+    "math": 0.9966
+   }
+  }
+ ]
+}

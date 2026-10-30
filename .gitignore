@@ -1,0 +1,12 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+results/
+# JIT-generated kernel sources (written by the build scripts at first use)
+src/atdev_serve/csrc/*/gen*/
+.venv/
+atdev-env.sh
+warmup_*.log
+server_*.log
+server_*.pid
