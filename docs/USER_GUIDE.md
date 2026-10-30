@@ -219,3 +219,16 @@ The launch scripts read these environment variables:
 The context length is 8192 tokens (`--max-model-len 8192`), which is the setting the stacks were tuned
 and measured with. You can pass a different value as an extra argument, but it has not been
 benchmarked.
+
+## Which stack should I use?
+
+**Pick in 10 seconds:**
+
+| If you... | Run |
+|---|---|
+| chat with the model yourself, or use it as a personal or coding assistant | `./serve_c1.sh` |
+| run one agent that calls the model step by step and want each step fast | `./serve_c1.sh` |
+| serve a chatbot or API to many users at the same time | `./serve_c32.sh` |
+| run several agents in parallel, or process many documents in a batch | `./serve_c32.sh` |
+| are not sure | start with `./serve_c1.sh`; switch to `./serve_c32.sh` once you regularly have more than ~4 requests in flight |
+

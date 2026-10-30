@@ -92,6 +92,16 @@ curl http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/jso
 
 ### Which stack should I run?
 
+**Pick in 10 seconds:**
+
+| If you... | Run |
+|---|---|
+| chat with the model yourself, or use it as a personal or coding assistant | `./serve_c1.sh` |
+| run one agent that calls the model step by step and want each step fast | `./serve_c1.sh` |
+| serve a chatbot or API to many users at the same time | `./serve_c32.sh` |
+| run several agents in parallel, or process many documents in a batch | `./serve_c32.sh` |
+| are not sure | start with `./serve_c1.sh`; switch to `./serve_c32.sh` once you regularly have more than ~4 requests in flight |
+
 | | `serve_c1.sh` | `serve_c32.sh` |
 |---|---|---|
 | Best for | one user or a few users, lowest latency per request | many simultaneous users, highest total throughput |
