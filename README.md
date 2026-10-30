@@ -250,9 +250,9 @@ their own licenses, which are listed on their model cards.
 ## Work with ATDEV
 
 [ATDEV](https://www.atdev.co.kr) optimizes LLM inference for **your model on your target GPUs**.
-This repository is one example of that work: on one A100, Qwen3.8-27B decodes **2.08x**
-faster for a single user and serves **1.55x** more tokens per second at 32 concurrent
-requests than the best stock vLLM configuration we could find, with accuracy gates in place.
+This repository is one example of that work: on one A100, Qwen3.8-27B runs **up to 14.2x faster**
+than the original model on stock vLLM (single user), and serves **up to 4.1x** more tokens per second
+at 32 concurrent requests, with accuracy gates in place.
 
 What we do:
 
