@@ -6,6 +6,7 @@
 - **2.08×** faster than the best stock-vLLM configuration we could find (196.5 → 408.9 tok/s)
 - **4.1×** more throughput at 32 concurrent requests than bf16 on stock vLLM, and **1.55×** more than the best vLLM settings (→ **2,730.9 tok/s**)
 - Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API
+- 🤗 Models on Hugging Face: [W3 overlay](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-W3-overlay) · [DFlash2 drafter](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-DFlash2-d16) (downloaded automatically on first start)
 
 **Faster Qwen3.8-27B decoding on one NVIDIA A100 80GB, as a plugin for stock vLLM 0.31.0.**
 
