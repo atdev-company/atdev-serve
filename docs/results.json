@@ -1,5 +1,5 @@
 {
-  "_about": "Every number shown in README.md, docs/*.md and docs/img/*. Hardware: 1x NVIDIA A100 80GB (sm_80), vLLM 0.31.0, greedy decoding (temperature 0), 96 fixed prompts (bench/prompts96.jsonl), max_tokens 1024. c=1 = mean per-request decode tok/s over the 96 prompts (2 repetitions); c=32 = aggregate output tok/s of the 96-prompt run at concurrency 32. null = still to be measured / filled (see the 'placeholder' key). Charts: python tools/make_charts.py.",
+  "_about": "Every number shown in README.md, docs/*.md and docs/img/*. Hardware: 1x NVIDIA A100 80GB (sm_80), vLLM 0.31.0, greedy decoding (temperature 0), 96 fixed prompts (bench/prompts96.jsonl), max_tokens 1024. c=1 = mean per-request decode tok/s over the 96 prompts (2 repetitions); c=32 = aggregate output tok/s of the 96-prompt run at concurrency 32. null = gate not run for that configuration. Charts: python tools/make_charts.py.",
   "ladder": {
     "c1": [
       {
@@ -175,7 +175,7 @@
         "ledger": "D16-serve"
       },
       {
-        "label": "+ graph stream forks, W3 pipeline fill, drafter glue fusions, GDN kernel cuts",
+        "label": "+ graph stream forks, W3 pipeline fill, drafter glue fusions, GDN kernel cuts\n(pre-release training data)",
         "kind": "full",
         "tps": 412.1,
         "ledger": "C1gdn3-e2e"
@@ -265,7 +265,7 @@
         "ledger": "C32e-scr"
       },
       {
-        "label": "+ branch-free quant, fused screen top-k, GDN ss12",
+        "label": "+ branch-free quant, fused screen top-k, GDN ss12\n(pre-release training data)",
         "kind": "full",
         "ratio": 1.567,
         "ledger": "C32z-e2e"

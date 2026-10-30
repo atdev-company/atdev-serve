@@ -31,9 +31,19 @@ The GPU must be free: the server reserves 90% of its memory.
 | if you... | run | what you get |
 |---|---|---|
 | serve one user at a time, or a few, and care about how fast each answer streams | **c1** (`serve_c1.sh`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings) |
-| serve many users at once and care about total throughput | **c32** (`serve_c32.sh`) | about 2,730.9 tokens/s in total at 32 parallel requests (vs 1,757 with the best stock vLLM settings) |
+| serve many users at once and care about total throughput | **c32** (`serve_c32.sh`) | about 2,730.9 tokens/s in total at 32 parallel requests (vs 1,757.1 with the best stock vLLM settings) |
 
 Both stacks accept any number of requests, but each is tuned for its load. Run one stack per GPU.
+
+**Pick in 10 seconds:**
+
+| If you... | Run |
+|---|---|
+| chat with the model yourself, or use it as a personal or coding assistant | `./serve_c1.sh` |
+| run one agent that calls the model step by step and want each step fast | `./serve_c1.sh` |
+| serve a chatbot or API to many users at the same time | `./serve_c32.sh` |
+| run several agents in parallel, or process many documents in a batch | `./serve_c32.sh` |
+| are not sure | start with `./serve_c1.sh`; switch to `./serve_c32.sh` once you regularly have more than ~4 requests in flight |
 
 ## 3a. Install and run with Docker
 
@@ -197,7 +207,7 @@ You should get numbers close to the README (within a few percent on an A100 80GB
 | `unknown ATDEV_OPT entries` | typo in `ATDEV_OPT` | use the names in the launch scripts |
 | No `enabled optimizations` line in the log | the plugin is not installed in the Python that runs `vllm` | `which vllm` should point into your venv. Run `source atdev-env.sh` |
 | `401` / `403` / `RepositoryNotFound` from Hugging Face | no access to a model repo | `huggingface-cli login` (or set `HF_TOKEN`) and check the repo names in `serve_c1.sh` |
-| Offline machine | models cannot download | download them elsewhere and pass local paths: `MODEL=/models/Qwen3.8-27B-INT4 W3_OVERLAY=/models/w3 DRAFTER=/models/d16 ./serve_c1.sh` |
+| Offline machine | models cannot download | download them elsewhere and pass local paths: `MODEL=/models/Qwen3.8-27B-INT4 W3_OVERLAY=/models/w3/w3_gptqact_d30_mlpo.safetensors,/models/w3/w3_gptqact_d30_qkv.safetensors DRAFTER=/models/d16 HF_HUB_OFFLINE=1 ./serve_c1.sh`. c1 also reads the config of `z-lab/Qwen3.8-27B-DFlash2`, so pre-download it into `HF_HOME` first (`huggingface-cli download z-lab/Qwen3.8-27B-DFlash2`) |
 | Docker: `could not select device driver "nvidia"` | NVIDIA Container Toolkit missing | install it and restart Docker |
 | Slower than expected | different GPU, another job on the GPU, or measurement with `temperature > 0` | run `bench/run_bench.sh` on an idle A100 80GB |
 
@@ -219,16 +229,3 @@ The launch scripts read these environment variables:
 The context length is 8192 tokens (`--max-model-len 8192`), which is the setting the stacks were tuned
 and measured with. You can pass a different value as an extra argument, but it has not been
 benchmarked.
-
-## Which stack should I use?
-
-**Pick in 10 seconds:**
-
-| If you... | Run |
-|---|---|
-| chat with the model yourself, or use it as a personal or coding assistant | `./serve_c1.sh` |
-| run one agent that calls the model step by step and want each step fast | `./serve_c1.sh` |
-| serve a chatbot or API to many users at the same time | `./serve_c32.sh` |
-| run several agents in parallel, or process many documents in a batch | `./serve_c32.sh` |
-| are not sure | start with `./serve_c1.sh`; switch to `./serve_c32.sh` once you regularly have more than ~4 requests in flight |
-

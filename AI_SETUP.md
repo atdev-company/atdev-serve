@@ -14,8 +14,8 @@ Repository: `https://github.com/atdev-company/atdev-serve`. Human guide: `docs/U
 * **R2. One GPU.** Use exactly one A100 80GB. Default GPU index 0, or the one the user names. Export
   `CUDA_VISIBLE_DEVICES=<index>` for every command and do not change it afterwards. A busy GPU means
   more than 1 GB already used or any compute process listed by `nvidia-smi`.
-* **R3. Long first start.** The first server start compiles CUDA kernels and downloads about 37 GB.
-  Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
+* **R3. Long first start.** The first server start compiles CUDA kernels and downloads model files
+  (about 37 GB for c1, about 19 GB for c32). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
 * **R4. Paths.** Work inside the repository root (`$REPO`). Use absolute paths in your own scripts.
 * **R5. Secrets.** If a Hugging Face token is needed, ask the user to provide it or run
   `huggingface-cli login`. Never print it or write it to files in the repository.
@@ -40,11 +40,11 @@ Run each check and record the result.
 | P2 | `nvidia-smi --query-gpu=index,name,memory.total,memory.used,driver_version --format=csv,noheader` | at least one row with `A100` and `81920 MiB` (or `80` GB) | no A100 80GB: stop and tell the user this release supports only the A100 80GB (sm_80) |
 | P3 | same output, driver column | driver major version >= 580 | ask the user to upgrade the NVIDIA driver (R1) |
 | P4 | `nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader` plus memory.used from P2 | the chosen GPU has no compute process and < 1 GB used | pick another free A100 or ask the user (R1, R2) |
-| P5 | `df -Pk "$REPO" "${HF_HOME:-$HOME/.cache/huggingface}" 2>/dev/null` | >= 60 GB free where the venv and the HF cache live | ask the user for a disk with space; set `HF_HOME` / `TORCH_EXTENSIONS_DIR` there |
+| P5 | `df -Pk "$REPO" "${HF_HOME:-$HOME/.cache/huggingface}" 2>/dev/null` | >= 80 GB free where the venv and the HF cache live | ask the user for a disk with space; set `HF_HOME` / `TORCH_EXTENSIONS_DIR` there |
 | P6 | `curl -s -o /dev/null -w '%{http_code}' https://huggingface.co/api/models/RedHatAI/Qwen3.8-27B-INT4` | `200` | offline: see F9 |
 | P7 | `docker info >/dev/null 2>&1 && docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 nvidia-smi -L` | prints the GPUs | Docker with GPU is not usable: take the venv path |
 | P8 | `command -v python3.12 \|\| command -v uv` | a path is printed | venv path needs Python 3.12 or uv: ask to install (R1) or use Docker |
-| P9 | `for d in "$CUDA_HOME" /usr/local/cuda-13.0 /usr/local/cuda; do [ -x "$d/bin/nvcc" ] && "$d/bin/nvcc" --version \| tail -2 && echo "CUDA_DIR=$d" && break; done` | `release 13.0` and a `CUDA_DIR=` line | venv path needs the CUDA 13.0 toolkit: ask to install it (R1), or use Docker, or try F2 |
+| P9 | `for d in "$CUDA_HOME" /usr/local/cuda-13.0 /usr/local/cuda; do [ -x "$d/bin/nvcc" ] && "$d/bin/nvcc" --version \| grep -q 'release 13.0' && echo "CUDA_DIR=$d" && break; done` | a `CUDA_DIR=` line (that directory has nvcc `release 13.0`) | venv path needs the CUDA 13.0 toolkit: ask to install it (R1), or use Docker, or try F2 |
 | P10 | `g++ --version \| head -1` | prints a version | `sudo apt install build-essential` (R1) |
 
 **Choose the install path.** If P7 passes, use **Phase 2A (Docker)**. If not, use **Phase 2B
@@ -100,7 +100,7 @@ python -c "import vllm, atdev_serve; print(vllm.__version__)"          # -> 0.31
 python -c "import importlib.metadata as m; print([e.value for e in m.entry_points(group='vllm.general_plugins')])"
 # -> list contains 'atdev_serve.register:register_all'
 which vllm                                                              # -> $REPO/.venv/bin/vllm
-nvcc --version | tail -1                                                # -> ...release 13.0...
+nvcc --version | grep -q 'release 13.0' && echo NVCC_OK                 # -> NVCC_OK
 ```
 
 ## Phase 3: start the server (venv path)
@@ -124,6 +124,9 @@ for i in $(seq 1 240); do
   sleep 30
 done
 ```
+
+Docker path: replace the `grep` line with
+`docker compose --profile "$STACK" logs --no-color 2>&1 | grep -qE 'Traceback|Error:' && { echo FAILED; break; }`.
 
 While waiting, these log lines are expected, in roughly this order:
 
@@ -156,6 +159,13 @@ source "$REPO/atdev-env.sh"
 bench/run_bench.sh "$STACK" "$REPO/results/agent_$STACK"
 # c1  -> prints mean_decode_tps; expected about 408.9 on an A100 80GB SXM (within ~5%)
 # c32 -> prints agg_output_tps;  expected about 2,730.9
+```
+
+Docker path (same expectations; the results directory stays inside the removed container, the
+numbers are printed):
+
+```bash
+docker compose --profile "$STACK" run --rm "atdev-$STACK" bench/run_bench.sh "$STACK" /tmp/agent_$STACK
 ```
 
 ## Phase 6: failure branches

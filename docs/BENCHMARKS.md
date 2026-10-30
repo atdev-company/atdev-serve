@@ -14,9 +14,11 @@ All numbers: Qwen3.8-27B, **1x NVIDIA A100 80GB (SXM, sm_80)**, vLLM 0.31.0 (pip
   over the 96 prompts**, averaged over 2 repetitions. The median is reported too.
 * **c=32 (concurrent)**: the same 96 prompts with 32 in flight. The headline is **aggregate output
   tok/s** = total completion tokens / wall time.
-* The atdev runs and the best-vLLM baselines run on the same GPU, with the same vLLM build and the
-  same client. Each ratio comes from **one session**: the baseline and atdev were measured back to
-  back, and the c=32 full stack figure is the mean of alternating rounds.
+* The atdev runs and the best-vLLM baselines use the same GPU, vLLM build and client. The
+  engine-only c=32 ratio (1.215x) comes from one session with the baseline. The other atdev figures
+  were measured in later sessions against the same baselines (196.5 / 1,757.1), which reproduced
+  within about 0.5% across sessions. The c=1 headline is the mean of 2 repetitions, and the c=32
+  full-stack figure is the mean of 4 alternating rounds.
 * Server flags shared by both sides: `--max-model-len 8192 --kv-cache-dtype bfloat16
   --language-model-only --gpu-memory-utilization 0.90 --mamba-ssm-cache-dtype bfloat16`.
 
@@ -29,7 +31,7 @@ All numbers: Qwen3.8-27B, **1x NVIDIA A100 80GB (SXM, sm_80)**, vLLM 0.31.0 (pip
 | 1 | `Qwen/Qwen3.8-27B` (bf16), vLLM defaults, no speculative decoding | 28.9 | 1.0x | 0.15x |
 | 2 | `RedHatAI/Qwen3.8-27B-INT4`, vLLM defaults | 74.9 | 2.6x | 0.38x |
 | 3 | INT4 + best vLLM settings: DFlash2 drafter k=7, fp8 drafter, bf16 SSM cache | 196.5 | 6.8x | 1.00x |
-| 4 | atdev-serve **engine only** (same model files as rung 3) | 284.4 | 9.8x | **1.45x** |
+| 4 | atdev-serve **engine only** (same model files as rung 3) | 284.4 | 9.9x | **1.45x** |
 | 5 | atdev-serve **full stack** (`serve_c1.sh`) | **408.9** | **14.2x** | **2.08x** |
 
 Rung 5 median: 388.9 tok/s. Accepted tokens per step (tau): 4.69. The
@@ -48,7 +50,7 @@ kernel-selection mode that ships.
 | 1 | `Qwen/Qwen3.8-27B` (bf16), vLLM defaults | 671.8 | 1.0x | 0.38x |
 | 2 | `RedHatAI/Qwen3.8-27B-INT4`, vLLM defaults | 1,264.7 | 1.9x | 0.72x |
 | 3 | INT4 + best vLLM settings: MTP k=1, W4A8 Marlin, TRITON_ATTN, bf16 SSM cache, no prefix caching | 1,757.1 | 2.6x | 1.00x |
-| 4 | atdev-serve **engine only** (same model files as rung 3) | 2,135.7 | 3.2x | **1.215x** |
+| 4 | atdev-serve **engine only** (same model files as rung 3) | 2,135.7 | 3.2x | **1.22x** |
 | 5 | atdev-serve **full stack** (`serve_c32.sh`) | **2,730.9** | **4.1x** | **1.55x** |
 
 <picture>
@@ -68,7 +70,10 @@ Notes on the ladder:
   DFlash2 drafter (c=1) or the built-in MTP head (c=32), and the same vLLM flags. It includes
   approximations that are used **only to select** speculative candidates (an int4 shadow `lm_head`
   and a frequency-ordered 64k draft vocabulary). The engine builds these at load time and every
-  accepted token is verified exactly. This release ships launch scripts for rung 5 only.
+  accepted token is verified exactly.
+* Rungs 1-3 are launched by `bench/serve_vllm_default.sh` / `serve_vllm_c1.sh` / `serve_vllm_c32.sh`
+  and rung 5 by `serve_c1.sh` / `serve_c32.sh`. This release ships no launch script for rung 4
+  (engine only).
 * Rung 5 also includes model-side changes. c=1: the 3-bit W3 overlay, the re-trained W4A16 block-16
   drafter, and an int8 + int4 split verify head. c=32: W4A4 activations on the large verify GEMMs, an
   int4 MTP head, and an int4 verify-head screen with exact bf16 rescoring.
@@ -111,6 +116,9 @@ concurrency (accuracy-gated where the option changes numerics).
 Each bar is a milestone that passed a same-session A/B against the previous best (paired per-prompt
 ratio with a 95% confidence interval at c=1, alternating rounds at c=32). The milestones were
 measured in different sessions, so read the chart as a history, not as an additive breakdown.
+The last development milestones (412.1 tok/s at c=1, 2,753.1 tok/s = 1.567x at c=32) used drafter
+and draft-vocabulary data from before the release. The released models were rebuilt from the public
+datasets only, which is why the release bars (408.9 and 1.554x) are slightly lower.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/progress_c1-dark.svg">

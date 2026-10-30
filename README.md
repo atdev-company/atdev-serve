@@ -10,8 +10,6 @@
 
 > **More models coming.** We are optimizing other widely used open models in the same way and will release them here and on [Hugging Face](https://huggingface.co/atdev-company) as they are ready. Watch or star this repository to get notified.
 
-**Faster Qwen3.8-27B decoding on one NVIDIA A100 80GB, as a plugin for stock vLLM 0.31.0.**
-
 atdev-serve installs next to an unmodified `pip install vllm==0.31.0` and hooks in through vLLM's
 plugin entry point. It adds custom CUDA kernels, tree-based speculative decoding, fusions and
 scheduling. You pick a configuration with one launch script and talk to the usual OpenAI-compatible
@@ -80,7 +78,7 @@ docker compose --profile c1 up --build        # single-user stack on port 8100
 ```bash
 git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
 ./install.sh                 # checks the machine, creates .venv, installs vllm==0.31.0 + atdev-serve
-source .venv/bin/activate
+source atdev-env.sh          # activates .venv and sets CUDA_HOME for the kernel build
 ./serve_c1.sh                # or ./serve_c32.sh
 ```
 
@@ -245,7 +243,8 @@ tools/                        make_charts.py (charts from docs/results.json), bu
 
 | | used by | license |
 |---|---|---|
-| [`RedHatAI/Qwen3.8-27B-INT4`](https://huggingface.co/RedHatAI/Qwen3.8-27B-INT4) | both stacks (target) | see model card |
+| [`RedHatAI/Qwen3.8-27B-INT4`](https://huggingface.co/RedHatAI/Qwen3.8-27B-INT4) | both stacks (target) | Apache-2.0 |
+| [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) | bf16 baseline rung only | Apache-2.0 |
 | [`z-lab/Qwen3.8-27B-DFlash2`](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) | c=1 (config; weights replaced by the atdev drafter) | Apache-2.0 |
 | [`atdev-company/Qwen3.8-27B-atdev-W3-overlay`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-W3-overlay) | c=1 | Apache-2.0 |
 | [`atdev-company/Qwen3.8-27B-atdev-DFlash2-d16`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-DFlash2-d16) | c=1 | Apache-2.0 |

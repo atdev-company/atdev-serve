@@ -11,7 +11,7 @@ case $stack in
   c32) exec ./serve_c32.sh "$@" ;;
   check)
     nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader || echo "no GPU visible"
-    nvcc --version | tail -1
+    nvcc --version | grep -m1 'release' || echo "nvcc not found"
     exec python -c "import torch, vllm, atdev_serve; print('vllm', vllm.__version__, 'torch', torch.__version__, 'cuda available', torch.cuda.is_available())" ;;
   *) exec "$stack" "$@" ;;
 esac
