@@ -187,6 +187,13 @@ source "$VENV/bin/activate"
 export CUDA_HOME="$CUDA_DIR"
 export PATH="\$CUDA_HOME/bin:\$PATH"
 export TORCH_EXTENSIONS_DIR="\${TORCH_EXTENSIONS_DIR:-\$HOME/.cache/torch_extensions}"
+# optional: relocate caches to a disk with space (uncomment and edit)
+# export HF_HOME=/data/cache/huggingface             # model downloads
+# export TORCH_EXTENSIONS_DIR=/data/cache/torch_extensions
+# export VLLM_CACHE_ROOT=/data/cache/vllm            # torch.compile cache
+# export TRITON_CACHE_DIR=/data/cache/triton
+# export XDG_CACHE_HOME=/data/cache                  # FlashInfer JIT cache uses it
+# export PIP_CACHE_DIR=/data/cache/pip
 EOF
 fi
 

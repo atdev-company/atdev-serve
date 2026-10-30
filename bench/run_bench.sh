@@ -32,8 +32,8 @@ PORT=$PORT setsid bash "$SERVE" > "$OUT/server.log" 2>&1 &
 SP=$!
 cleanup() { kill -TERM -- -$SP 2>/dev/null; sleep 5; kill -KILL -- -$SP 2>/dev/null; }
 trap cleanup EXIT
-# first start compiles the CUDA kernels: allow up to 60 min
-for _ in $(seq 1 720); do
+# first start compiles the CUDA kernels and downloads the models: allow up to 2 h
+for _ in $(seq 1 1440); do
   curl -sf "http://127.0.0.1:$PORT/health" >/dev/null && break
   kill -0 $SP 2>/dev/null || { echo "server died"; tail -30 "$OUT/server.log"; exit 4; }
   sleep 5

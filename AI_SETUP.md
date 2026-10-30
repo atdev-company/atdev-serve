@@ -15,7 +15,7 @@ Repository: `https://github.com/atdev-company/atdev-serve`. Human guide: `docs/U
   `CUDA_VISIBLE_DEVICES=<index>` for every command and do not change it afterwards. A busy GPU means
   more than 1 GB already used or any compute process listed by `nvidia-smi`.
 * **R3. Long first start.** The first server start compiles CUDA kernels and downloads model files
-  (about 37 GB for c1, about 19 GB for c32; the stacks are defined in Phase 1). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
+  (about 32 GiB for c1, about 18 GiB for c32; the stacks are defined in Phase 1). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
 * **R4. Paths.** Work inside the repository root (`$REPO`). Use absolute paths in your own scripts.
 * **R5. Secrets.** If a Hugging Face token is needed, ask the user to provide it or run
   `huggingface-cli login`. Never print it or write it to files in the repository.
@@ -23,8 +23,9 @@ Repository: `https://github.com/atdev-company/atdev-serve`. Human guide: `docs/U
 ## Phase 0: get the repository
 
 ```bash
-git clone https://github.com/atdev-company/atdev-serve "$HOME/atdev-serve"   # skip if already present
-export REPO="$HOME/atdev-serve"; cd "$REPO"
+export REPO="${REPO:-$HOME/atdev-serve}"
+git clone https://github.com/atdev-company/atdev-serve "$REPO"   # skip if already present
+cd "$REPO"
 test -f pyproject.toml && test -f serve_c1.sh && echo REPO_OK
 ```
 
@@ -32,15 +33,16 @@ Expected: `REPO_OK`.
 
 ## Phase 1: preflight (read-only)
 
-Run each check and record the result.
+Run each check and record the result. `nvidia-smi` ignores `CUDA_VISIBLE_DEVICES` and lists all
+GPUs: judge P2 / P4 only by the row for the chosen index.
 
 | id | command | pass condition | on failure |
 |---|---|---|---|
 | P1 | `uname -sm` | `Linux x86_64` | stop: unsupported platform |
 | P2 | `nvidia-smi --query-gpu=index,name,memory.total,memory.used,driver_version --format=csv,noheader` | at least one row with `A100` and `81920 MiB` (or `80` GB) | no A100 80GB: stop and tell the user this release supports only the A100 80GB (sm_80) |
 | P3 | same output, driver column | driver major version >= 580 | ask the user to upgrade the NVIDIA driver (R1) |
-| P4 | `nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader` plus memory.used from P2 | the chosen GPU has no compute process and < 1 GB used | pick another free A100 or ask the user (R1, R2) |
-| P5 | `df -Pk "$REPO" "${HF_HOME:-$HOME/.cache/huggingface}" 2>/dev/null` | >= 80 GB free where the venv and the HF cache live | ask the user for a disk with space; set `HF_HOME` / `TORCH_EXTENSIONS_DIR` there |
+| P4 | `nvidia-smi -i <idx> --query-compute-apps=pid,used_memory --format=csv,noheader` (also print `nvidia-smi --query-gpu=index,uuid,memory.used --format=csv` for the index/UUID mapping) | empty output (no compute process) and < 1 GB used on that GPU | pick another free A100 or ask the user (R1, R2) |
+| P5 | `df -Pk "$REPO" "${HF_HOME:-$HOME/.cache/huggingface}" 2>/dev/null` | >= 80 GB free where the venv and the HF cache live | ask the user for a disk with space and relocate the caches there (optional, set before install/start; atdev-env.sh has commented lines): `HF_HOME`, `TORCH_EXTENSIONS_DIR`, `VLLM_CACHE_ROOT`, `TRITON_CACHE_DIR`, `XDG_CACHE_HOME` (FlashInfer uses it), `PIP_CACHE_DIR` |
 | P6 | `curl -s -o /dev/null -w '%{http_code}' https://huggingface.co/api/models/RedHatAI/Qwen3.8-27B-INT4` | `200` | offline: see F9 |
 | P7 | `docker info >/dev/null 2>&1 && docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 nvidia-smi -L` | prints the GPUs | Docker with GPU is not usable: take the venv path |
 | P8 | `command -v python3.12 \|\| command -v uv` | a path is printed | venv path needs Python 3.12 or uv: ask to install (R1) or use Docker |
@@ -110,8 +112,8 @@ nvcc --version | grep -q 'release 13.0' && echo NVCC_OK                 # -> NVC
 source "$REPO/atdev-env.sh"
 export CUDA_VISIBLE_DEVICES=<gpu index from P4>
 LOG="$REPO/server_$STACK.log"
-nohup setsid "./serve_$STACK.sh" > "$LOG" 2>&1 &
-echo $! > "$REPO/server_$STACK.pid"
+nohup setsid bash -c 'echo $$ > "$0"; exec ./serve_'"$STACK"'.sh' "$REPO/server_$STACK.pid" > "$LOG" 2>&1 &
+# the PID file holds the process-group leader (used by Phase 8)
 ```
 
 ## Phase 4: wait for readiness
@@ -122,23 +124,33 @@ Poll every 30 s for up to 2 hours:
 for i in $(seq 1 240); do
   curl -sf http://127.0.0.1:8100/health >/dev/null && { echo READY; break; }
   grep -qE 'Traceback|Error:|server exited' "$LOG" && { echo FAILED; break; }
+  kill -0 "$(cat "$REPO/server_$STACK.pid")" 2>/dev/null || { echo FAILED; break; }
   sleep 30
 done
 ```
 
 Docker path: replace the `grep` line with
-`docker compose --profile "$STACK" logs --no-color 2>&1 | grep -qE 'Traceback|Error:' && { echo FAILED; break; }`.
+`docker compose --profile "$STACK" logs --no-color 2>&1 | grep -qE 'Traceback|Error:' && { echo FAILED; break; }`
+and the `kill -0` line with
+`[ -n "$(docker compose --profile "$STACK" ps -q --status running)" ] || { echo FAILED; break; }`.
 
 While waiting, these log lines are expected, in roughly this order:
 
 1. `atdev-serve: enabled optimizations: [...]` (the plugin is active). If it is missing after the
    model starts loading, go to F4.
-2. Model download / weight loading lines (first start only)
-3. A long period of kernel compilation: `nvcc` / `cicc` processes are using CPU and the log is
-   quiet. This is normal (R3).
-4. CUDA graph capture, then `Application startup complete`
+2. About 5 minutes with a quiet log while the kernels compile (first start only): `nvcc` / `cicc`
+   processes are using CPU. This is normal (R3).
+3. Model download (first start only), then weight loading
+4. `torch.compile` and FlashInfer `Building JIT module sampling`
+5. CUDA graph capture, then `Application startup complete`
 
-On `FAILED`, take the first `Traceback` / `Error` block in `$LOG` and match it against Phase 6.
+Triton JIT warnings on the first request are normal.
+
+On `FAILED`, the grep stops at the first match, which is often not the cause: read the last error
+lines (`grep -E 'Error|Exception' "$LOG" | tail -5`) and match them against Phase 6.
+
+Harmless warnings: unauthenticated Hugging Face Hub requests, and vLLM `Can't pickle ...` for the AOT
+cache.
 
 ## Phase 5: verify the server
 
@@ -152,13 +164,18 @@ curl -s http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/
 # expected: a completion whose content contains 391
 ```
 
-Optional performance check. It starts its own server, so stop the one from Phase 3 / 2A first
-(Phase 8). It needs the `bench` extra, which install.sh installs:
+The model's `generation_config.json` defaults to temperature 1.0; the checks here pass
+`"temperature":0` explicitly. Pass the temperature explicitly for reproducible results.
+
+Optional performance check. Run Phase 3 (first start) before the benchmark, so the kernels and
+models are cached. It starts its own server, so stop the one from Phase 3 / 2A first (Phase 8). It
+needs the `bench` extra, which install.sh installs:
 
 ```bash
 source "$REPO/atdev-env.sh"
+export CUDA_VISIBLE_DEVICES=<gpu index from P4>    # in this shell too; the serve scripts default to 0
 bench/run_bench.sh "$STACK" "$REPO/results/agent_$STACK"
-# c1  -> prints mean_decode_tps; expected about 408.9 on an A100 80GB SXM (within ~5%)
+# c1  -> compare mean_decode_tps (not median, ~5% lower by design) with about 408.9 on an A100 80GB SXM (within ~5%)
 # c32 -> prints agg_output_tps;  expected about 2,730.9
 ```
 
@@ -186,8 +203,9 @@ docker compose --profile "$STACK" run --rm "atdev-$STACK" bench/run_bench.sh "$S
 | F11 | `unsupported GNU version` from nvcc | install a g++ version supported by nvcc 13.0 and export `CC` / `CXX` (R1) |
 | F12 | `unknown ATDEV_OPT entries` | `ATDEV_OPT` was edited by hand. Restore it from the serve script |
 | F13 | speed far below the expectation | check that the GPU is an idle A100 80GB (P2 / P4), the request uses `temperature: 0`, and the measurement is not of the first requests after start |
+| F14 | `ipc path ... is longer than 107 characters` (ZMQError) | vLLM's IPC socket lives under `TMPDIR`; export a short `TMPDIR` (e.g. `export TMPDIR=/tmp/atdev`) and restart |
 
-If a failure is not in this table, stop and report the first error block and the outputs of P2 and P9
+If a failure is not in this table, stop and report the last error block and the outputs of P2 and P9
 to the user.
 
 ## Phase 7: report to the user
