@@ -264,5 +264,16 @@ What we do:
   them, and validated with accuracy gates.
 * **Serving-stack tuning.** vLLM / SGLang configuration, batching and memory planning for your traffic.
 
+Beyond inference optimization, ATDEV delivers end-to-end AI solutions for enterprises:
+
+* **Forward-deployed engineering.** An experienced team of forward-deployed engineers (FDEs) works
+  directly with your teams, from discovery and prototyping to production rollout and operations.
+* **AI agent development, end to end.** Requirements analysis, architecture, tool and workflow
+  integration, evaluation, deployment and monitoring of production agents.
+* **In-house solutions.** Proven platforms for retrieval-augmented generation (RAG), document parsing
+  and OCR, ready to adapt to your data and infrastructure.
+* **Model fine-tuning.** Domain adaptation of LLMs, vision-language models (VLMs), OCR models and
+  other deep learning models, including data preparation, training and evaluation.
+
 How much we gain depends on the model, the hardware and the workload, so we measure before we promise
 anything. For business inquiries, contact **[atdev@atdev.co.kr](mailto:atdev@atdev.co.kr)**.
