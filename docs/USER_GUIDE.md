@@ -19,7 +19,7 @@ A100 80GB. Follow the steps in order.
 | GPU | NVIDIA **A100 80GB** (other GPUs are not supported) | `nvidia-smi` lists `A100-SXM4-80GB` or `A100 80GB PCIe` |
 | Driver | NVIDIA driver **>= 580** (CUDA 13.0) | `nvidia-smi` top-right shows `CUDA Version: 13.0` or higher |
 | OS | Linux x86_64 | `uname -sm` |
-| Disk | **80 GB free** (models ~37 GB, Python env ~9 GB, kernel cache ~2 GB, headroom) | `df -h ~` |
+| Disk | **80 GB free** (models ~34 GB (32 GiB) for c1, ~19 GB for c32, Python env ~9 GB, kernel cache ~2 GB, headroom) | `df -h ~` |
 | Network | access to `huggingface.co` (models download on the first start) | `curl -I https://huggingface.co` |
 | Docker path | Docker + NVIDIA Container Toolkit | `docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 nvidia-smi` |
 | venv path | Python 3.12, CUDA 13.0 toolkit with `nvcc`, `g++` | `python3.12 --version`, `nvcc --version`, `g++ --version` |
