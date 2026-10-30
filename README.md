@@ -8,6 +8,8 @@
 - Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API
 - 🤗 Models on Hugging Face: [W3 overlay](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-W3-overlay) · [DFlash2 drafter](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-DFlash2-d16) (downloaded automatically on first start)
 
+> **More models coming.** We are optimizing other widely used open models in the same way and will release them here and on [Hugging Face](https://huggingface.co/atdev-company) as they are ready. Watch or star this repository to get notified.
+
 **Faster Qwen3.8-27B decoding on one NVIDIA A100 80GB, as a plugin for stock vLLM 0.31.0.**
 
 atdev-serve installs next to an unmodified `pip install vllm==0.31.0` and hooks in through vLLM's
