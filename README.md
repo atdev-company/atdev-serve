@@ -151,7 +151,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["MTP head (int4)<br/>3 drafts per request<br/>+ confidence per draft"] --> B["DI1 scheduler<br/>rank drafts by cumulative confidence<br/>admit the best ones into a 96-row budget"]
+    A["MTP head (int4)<br/>3 drafts per request<br/>+ confidence per draft"] --> B["Confidence scheduler<br/>rank drafts by cumulative confidence<br/>admit the best ones into a 96-row budget"]
     B --> C["Target verify<br/>variable length per request<br/>MarlinA4 W4A4 split-K GEMMs<br/>GDN ss12 + exact c=32 attention"]
     C --> D["Verify head<br/>int4 screen of all 248k rows<br/>-> top-16 rescored exactly in bf16"]
     D --> E["Greedy accept + commit"]
@@ -160,7 +160,7 @@ flowchart LR
 
 | technique | type | what it does | measured effect |
 |---|---|---|---|
-| DI1 confidence-scheduled varlen verify (`di1_varlen`) | engine | MTP drafts k=3, but each step verifies only the drafts with the highest cumulative confidence, within the row budget of k=2 (96 rows at 32 requests). Uses vLLM's built-in adaptive-verification machinery, enabled for this hybrid model | tokens/step 2.24-2.31 -> 2.41-2.47, +2.1% to +2.9% |
+| Confidence-scheduled varlen verify (`di1_varlen`) | engine | MTP drafts k=3, but each step verifies only the drafts with the highest cumulative confidence, within the row budget of k=2 (96 rows at 32 requests). Uses vLLM's built-in adaptive-verification machinery, enabled for this hybrid model | tokens/step 2.24-2.31 -> 2.41-2.47, +2.1% to +2.9% |
 | GDN single-state verify kernels (`gdn_ss12`) | engine | Variable-length GDN verify that writes one state per request and balances the work across CTAs | first version (ss4) on the W4A4 stack: +5.75%. Later versions add small bit-identical gains |
 | Exact c=32 attention (`c32_attn`) | engine | CUDA verify attention, bit-identical to the stock path, faster | +1.7% |
 | Draft vocabulary for MTP (`draft_vocab`) | engine | The MTP head scores a 64k frequent-token vocabulary in int4, for drafting only | +3% |
@@ -173,8 +173,8 @@ More detail, the step-time breakdown and the full milestone history are in
 
 ## Accuracy
 
-Greedy decoding, thinking disabled. GSM8K takes the answer from `\boxed{}` (`bench/acc_gsm8k.py`).
-Long-context is 36 passkey / multi-key retrieval items at 2k-6.5k tokens (`bench/acc_longctx.py`).
+Greedy decoding, thinking disabled. GSM8K takes the answer from `\boxed{}`.
+Long-context is 36 passkey / multi-key retrieval items at 2k-6.5k tokens.
 "c=1" rows use the settings tuned for 1 client (one request at a time), "c=32" rows the settings tuned
 for 32 concurrent clients.
 
@@ -202,19 +202,10 @@ GPUs are not supported by this release.
 
 ## Reproducing the numbers
 
-```bash
-pip install aiohttp                                          # or: pip install ".[bench]"
-bench/run_bench.sh vllm_c1  results/vllm_c1                  # best stock vLLM, c=1 (1 client)
-bench/run_bench.sh c1       results/atdev_c1                 # atdev full stack, c=1
-bench/run_bench.sh vllm_c32 results/vllm_c32                 # c=32 (32 concurrent clients)
-bench/run_bench.sh c32      results/atdev_c32
-MODEL=Qwen/Qwen3.8-27B bench/run_bench.sh default_c1 results/bf16_default_c1   # bottom rung
-ACC=1 ACC_N=1319 LONGCTX=1 bench/run_bench.sh c1 results/atdev_c1_gate           # accuracy gates
-python bench/paired_c1.py results/vllm_c1 results/atdev_c1   # paired per-prompt ratio
-```
-
-Measure the baseline and atdev in the same session on the same GPU. See
-[docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the metric definitions and the baseline sweeps.
+This repository contains only what is needed to serve the two stacks. The metric definitions, the
+exact baseline `vllm serve` commands and how to compare on your own GPU are in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md). Measure the baseline and atdev in the same session on the
+same GPU.
 
 ## Requirements
 
@@ -231,16 +222,14 @@ Measure the baseline and atdev in the same session on the same GPU. See
 ## Repository layout
 
 ```
-serve_c1.sh, serve_c32.sh     launch scripts (every setting spelled out as an env var)
+serve_c1.sh, serve_c32.sh     launch scripts (features + per-stack options as env vars)
 install.sh                    venv installer with preflight checks (--dry-run to preview)
 docker/, docker-compose.yml   container image + compose profiles c1 / c32
 AI_SETUP.md                   end-to-end setup instructions for AI coding agents
 src/atdev_serve/              the vLLM plugin: register.py (entry point), feature modules,
   csrc/                       CUDA sources (JIT-built), incl. vLLM-derived Marlin kernels
   data/token_order.npy        draft-vocabulary frequency order
-bench/                        benchmark client, accuracy gates, prompts, baseline launch scripts
-docs/                         USER_GUIDE, BENCHMARKS, HOW_IT_WORKS, results.json, charts
-tools/                        make_charts.py (charts from docs/results.json), build_draft_vocab.py
+docs/                         USER_GUIDE, BENCHMARKS, HOW_IT_WORKS, charts
 ```
 
 ## Model files

@@ -14,11 +14,7 @@
 // marlin_plus: MP_PURE_ASM=1 drops `volatile` from register-only asm (mma,
 // lop3, prmt) so ptxas/nvcc may interleave them with loads (stock: volatile).
 #ifndef MP_ASM_PURE
-  #if defined(MP_PURE_ASM) && MP_PURE_ASM
-    #define MP_ASM_PURE asm
-  #else
     #define MP_ASM_PURE asm volatile
-  #endif
 #endif
 
 namespace MARLIN_NAMESPACE_NAME {

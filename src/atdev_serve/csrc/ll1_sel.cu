@@ -1,8 +1,8 @@
-// LL1-sel (ATDEV_LL1_SEL=1): the DFlash2 CandidateSelector at c=1 (1 request, D = 15 steps, top-16, rank 256) as ONE
+// ll1_fuse sel: the DFlash2 CandidateSelector at c=1 (1 request, D = 15 steps, top-16, rank 256) as ONE
 // kernel. Stock (Inductor graph of CandidateSelector.forward, 6 launches): hidden_projection = cuBLAS/CUTLASS
 // s16816gemm_bf16_64x64_64x6 grid [4, 1, 16] (split-K S = 16, 320 k per split) + splitKreduce; successor gather;
 // predecessor gather * hidden (bf16); einsum blpr,blcr->blpc (CUTLASS wmma bf16 16x16, k in order); + unary (f32).
-// Bit-identity (tests/test_ll1_fuse.py sel):
+// Bit-identity:
 //   * hidden_projection: per split acc = mma.m16n8k16 over the split's k16 chunks in order; v = 0 + p0 + ... + p15;
 //     lin = bf16_rn(v)
 //   * A[p][r] = bf16_rn(pred_cb[pid(l, p)][r] * lin[l][r]), pid(0, p) = anchor, pid(l, p) = cand[l - 1][p]
@@ -15,12 +15,6 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_bf16.h>
 
-#ifndef SEL_PF
-#define SEL_PF 1
-#endif
-#ifndef SEL_STOP
-#define SEL_STOP 0
-#endif
 namespace {
 
 constexpr int L = 15, P = 16, R = 256, K = 5120, S = 16, KS = K / S;  // 320 k per split
@@ -69,7 +63,7 @@ __global__ void __launch_bounds__(THREADS) sel_kernel(
   __nv_bfloat16* sP = sB + 32 * ROWP;  // [16][RP] pred rows (scaled in place by lin later)
   __nv_bfloat16* sS = sP + 16 * RP;    // [16][RP] succ rows
   // ---- phase-2 operand rows (independent of the projection) prefetched at the start by CTAs 0..L-1
-  if (SEL_PF && blockIdx.x < L) {
+  if (blockIdx.x < L) {
     const int l = blockIdx.x;
     for (int i = tid; i < 2 * 16 * (R / 8); i += THREADS) {
       const int which = i / (16 * (R / 8)), j = i % (16 * (R / 8)), p = j / (R / 8), v = j % (R / 8);
@@ -114,9 +108,6 @@ __global__ void __launch_bounds__(THREADS) sel_kernel(
     if (grp < L) { o[grp * R + col] = acc[0]; o[grp * R + col + 1] = acc[1]; }
     if (grp + 8 < L) { o[(grp + 8) * R + col] = acc[2]; o[(grp + 8) * R + col + 1] = acc[3]; }
   }
-#if SEL_STOP == 1
-  return;
-#endif
   __threadfence();
   __syncthreads();
   __shared__ int s_last;
@@ -139,11 +130,6 @@ __global__ void __launch_bounds__(THREADS) sel_kernel(
     __syncthreads();
     if (tid == 0) atomicAdd(cnt + CG, 1);  // column groups done
   }
-#if SEL_STOP == 2
-  if (blockIdx.x == 0 && tid == 0) { __threadfence(); }
-  if (s_last && tid == 0 && atomicAdd(cnt + CG + 1, 1) == CG - 1) { cnt[CG + 1] = 0; atomicExch(cnt + CG, 0); }
-  return;
-#endif
   if (blockIdx.x >= L) return;
   // ---- phase 2: row block l
   const int l = blockIdx.x;
@@ -202,7 +188,7 @@ static int g_ok = -1;
 
 bool sel_ok() {
   if (g_ok < 0) {
-    const int smem = (16 + 32) * ROWP * 2 + (SEL_PF ? 2 * 16 * RP * 2 : 0);
+    const int smem = (16 + 32) * ROWP * 2 + 2 * 16 * RP * 2;
     cudaFuncSetAttribute(sel_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
     int per_sm = 0, sms = 0, dev = 0;
     cudaGetDevice(&dev);
@@ -223,7 +209,7 @@ void sel(torch::Tensor h, torch::Tensor w, torch::Tensor pcb, torch::Tensor scb,
   TORCH_CHECK(cand.is_contiguous() && cand.numel() == L * P && cand.scalar_type() == at::kLong);
   TORCH_CHECK(unary.is_contiguous() && unary.numel() == L * P && unary.scalar_type() == at::kFloat);
   TORCH_CHECK(anchor.scalar_type() == at::kInt && out.is_contiguous() && out.numel() == L * P * P);
-  const int smem = (16 + 32) * ROWP * 2 + (SEL_PF ? 2 * 16 * RP * 2 : 0);
+  const int smem = (16 + 32) * ROWP * 2 + 2 * 16 * RP * 2;
   sel_kernel<<<NCTA, THREADS, smem, at::cuda::getCurrentCUDAStream()>>>(
       reinterpret_cast<const __nv_bfloat16*>(h.data_ptr()), h.stride(0),
       reinterpret_cast<const __nv_bfloat16*>(w.data_ptr()), reinterpret_cast<const __nv_bfloat16*>(pcb.data_ptr()),

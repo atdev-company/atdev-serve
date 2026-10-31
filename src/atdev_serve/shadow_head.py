@@ -2,40 +2,34 @@
 
 Drafters only need a short candidate list from the lm_head, not full logits:
 
-* DFlash2 / LiLiCorr call ``LogitsProcessor.get_top_k_tokens`` (top-16 per
-  mask position, then the candidate selector walks them).
-* MTP / EAGLE heads call ``LogitsProcessor.get_top_tokens`` (argmax) when
+* DFlash2 calls ``LogitsProcessor.get_top_k_tokens`` (top-16 per mask
+  position, then the candidate selector walks them).
+* MTP heads call ``LogitsProcessor.get_top_tokens`` (argmax) when
   ``use_local_argmax_reduction`` is set in the speculative config.
 
 Stock vLLM computes these with a full bf16 GEMM over the shared target
 lm_head (248320 x 5120 bf16 = 2.54 GB for Qwen3.8), i.e. ~1.6 ms per draft
-pass on an A100. This module keeps a low-bit *shadow* of the lm_head
-(int4 g128 by default, 0.66 GB) and computes:
+pass on an A100. This module keeps an int4 g128 *shadow* of the lm_head
+(0.66 GB) and computes:
 
 1. approximate logits with the shadow (Marlin W4A16 GEMM),
-2. the top-``screen`` approximate candidates per row,
+2. the top-``screen`` (128) approximate candidates per row,
 3. exact bf16 logits for only those candidates (row gather + bmm), and
 4. the final top-k / argmax among them.
 
 The result equals the stock result whenever the true top-k is inside the
-approximate top-``screen`` (screen=128 vs k<=16 by default). Only draft
-tokens are affected; the target's verify logits stay the stock bf16 GEMM, so
-generated text is unchanged and only the acceptance rate could move.
+approximate top-``screen``. Only draft tokens are affected; the target's
+verify logits are computed separately, so only the acceptance rate could move.
 
 Delivery: ``LogitsProcessor`` is a ``PluggableLayer``; ``register()`` swaps in
 ``ScreenedLogitsProcessor`` via ``PluggableLayer.register_oot``. The subclass
 only overrides the two top-token methods, so ``forward`` (target logits) is
-untouched.
-
-Env knobs:
-  ATDEV_SHADOW_HEAD_BITS    4 (default) or 8
-  ATDEV_SHADOW_HEAD_GROUP   128 (default), 64, 32 or -1 (channelwise)
-  ATDEV_SHADOW_HEAD_SCREEN  approximate candidates per row (default 128)
+untouched. ``ShadowHead`` is also the low-bit Marlin copy used by draft_vocab,
+verify_split_head and mtp_w4.
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 import torch
@@ -84,15 +78,6 @@ class ShadowHeadConfig:
     def quant_type(self) -> ScalarType:
         return _QUANT_TYPES[self.bits]
 
-    @classmethod
-    def from_env(cls) -> ShadowHeadConfig:
-        return cls(
-            bits=int(os.environ.get("ATDEV_SHADOW_HEAD_BITS", "4")),
-            group_size=int(os.environ.get("ATDEV_SHADOW_HEAD_GROUP", "128")),
-            screen=int(os.environ.get("ATDEV_SHADOW_HEAD_SCREEN", "128")),
-            a8=os.environ.get("ATDEV_SHADOW_HEAD_A8", "0") == "1",
-        )
-
 
 # ---------------------------------------------------------------------------
 # Quantization (pure torch; matches vLLM's quant_utils.quantize_weights +
@@ -111,16 +96,6 @@ def _pack_rows(q: torch.Tensor, bits: int) -> torch.Tensor:
     # Reinterpret as two's-complement int32 (values are < 2**32).
     packed = torch.where(packed >= 2**31, packed - 2**32, packed)
     return packed.to(torch.int32)
-
-
-def _unpack_rows(packed: torch.Tensor, bits: int) -> torch.Tensor:
-    """Inverse of _pack_rows: [K * bits / 32, N] int32 -> [K, N] int32 codes."""
-    pack_factor = 32 // bits
-    rows, n = packed.shape
-    p = packed.to(torch.int64) & 0xFFFFFFFF
-    shifts = torch.arange(0, 32, bits, device=p.device, dtype=torch.int64)
-    q = (p.unsqueeze(1) >> shifts.view(1, -1, 1)) & ((1 << bits) - 1)
-    return q.reshape(rows * pack_factor, n).to(torch.int32)
 
 
 @torch.no_grad()
@@ -164,86 +139,25 @@ def quantize_and_pack(
     return packed, scales
 
 
-def dequantize_packed(
-    packed: torch.Tensor,
-    scales: torch.Tensor,
-    quant_type: ScalarType,
-    group_size: int,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    """Reference dequantization back to an [N, K] weight."""
-    q = _unpack_rows(packed, quant_type.size_bits) - quant_type.bias  # [K, N]
-    k, n = q.shape
-    group = k if group_size == -1 else group_size
-    w = q.float().view(k // group, group, n) * scales.float().unsqueeze(1)
-    return w.view(k, n).t().contiguous().to(dtype)
-
-
 # ---------------------------------------------------------------------------
 # Shadow head
 # ---------------------------------------------------------------------------
 
 
 class ShadowHead:
-    """Low-bit copy of an lm_head weight with an approximate-logits GEMM.
+    """Low-bit copy of an lm_head weight with an approximate-logits Marlin GEMM
+    (W4A16 / W8A16, or W4A8 with ``config.a8``)."""
 
-    backend="marlin": Marlin W4A16/W8A16 (CUDA, the production path).
-    backend="reference": dequantized weight + F.linear (CPU tests only; it
-    costs as much memory as the original head).
-    """
+    backend = "marlin"
 
-    def __init__(
-        self,
-        weight: torch.Tensor,
-        config: ShadowHeadConfig,
-        backend: str | None = None,
-    ) -> None:
-        if backend is None:
-            backend = "marlin" if weight.is_cuda else "reference"
-        if backend not in ("marlin", "reference"):
-            raise ValueError(f"unknown shadow head backend {backend!r}")
+    def __init__(self, weight: torch.Tensor, config: ShadowHeadConfig) -> None:
         self.config = config
-        self.backend = backend
         self.size_n, self.size_k = weight.shape
         self.dtype = weight.dtype
 
         packed, scales = quantize_and_pack(
             weight, config.quant_type, config.group_size
         )
-        self._init_from_packed(packed, scales)
-
-    @classmethod
-    def from_packed(
-        cls,
-        packed: torch.Tensor,
-        scales: torch.Tensor,
-        config: ShadowHeadConfig,
-        size_n: int,
-        size_k: int,
-        dtype: torch.dtype,
-        backend: str | None = None,
-    ) -> ShadowHead:
-        """Wrap already-quantized GPTQ-packed codes (see ``quantize_and_pack``)."""
-        self = cls.__new__(cls)
-        if backend is None:
-            backend = "marlin" if packed.is_cuda else "reference"
-        if backend not in ("marlin", "reference"):
-            raise ValueError(f"unknown shadow head backend {backend!r}")
-        self.config = config
-        self.backend = backend
-        self.size_n, self.size_k = size_n, size_k
-        self.dtype = dtype
-        self._init_from_packed(packed, scales)
-        return self
-
-    def _init_from_packed(self, packed: torch.Tensor, scales: torch.Tensor) -> None:
-        config = self.config
-        if self.backend == "reference":
-            self.ref_weight = dequantize_packed(
-                packed, scales, config.quant_type, config.group_size, self.dtype
-            )
-            self.nbytes = packed.numel() * 4 + scales.numel() * scales.element_size()
-            return
         self._init_marlin(packed, scales)
 
     def _init_marlin(self, packed: torch.Tensor, scales: torch.Tensor) -> None:
@@ -292,15 +206,11 @@ class ShadowHead:
 
     def approx_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """[M, K] -> approximate [M, N] logits in the activation dtype."""
-        if self.backend == "reference":
-            return torch.nn.functional.linear(
-                hidden_states, self.ref_weight.to(hidden_states.dtype)
-            )
         from vllm.model_executor.layers.quantization.utils.marlin_utils import (
             apply_gptq_marlin_linear,
         )
 
-        a8 = getattr(self, "a8", False)
+        a8 = self.a8
         return apply_gptq_marlin_linear(
             input=hidden_states,
             weight=self.qweight,
@@ -366,9 +276,8 @@ class ScreenedLogitsProcessor(LogitsProcessor):
     """
 
     _shadow_config: ShadowHeadConfig | None = None
-    # Whether the draft-only top-token paths use the shadow. Subclasses that
-    # reuse this class for other purposes (verify_head_screen) turn it off
-    # when ATDEV_OPT does not include shadow_head.
+    # Whether the draft-only top-token paths use the shadow (draft_vocab turns
+    # it off when it installs this class without ATDEV_OPT shadow_head).
     _draft_screen_enabled: bool = True
     # ATDEV_OPT=draft_vocab: draft top-k over a frequent-token subset
     # (atdev_serve.draft_vocab) takes precedence over the shadow screening.
@@ -391,7 +300,7 @@ class ScreenedLogitsProcessor(LogitsProcessor):
     @classmethod
     def shadow_config(cls) -> ShadowHeadConfig:
         if cls._shadow_config is None:
-            cls._shadow_config = ShadowHeadConfig.from_env()
+            cls._shadow_config = ShadowHeadConfig()
         return cls._shadow_config
 
     def _shadow_for(
@@ -417,11 +326,10 @@ class ScreenedLogitsProcessor(LogitsProcessor):
         shadow = self._build_shadow(weight.data)
         setattr(lm_head, _SHADOW_ATTR, shadow)
         logger.info(
-            "atdev shadow_head: built %s %s shadow of lm_head %s "
+            "atdev shadow_head: built int%d g%d shadow of lm_head %s "
             "(%.2f GB vs %.2f GB bf16), draft screen=%d",
-            shadow.backend,
-            getattr(shadow, "describe", lambda: (
-                f"int{shadow.config.bits} g{shadow.config.group_size}"))(),
+            shadow.config.bits,
+            shadow.config.group_size,
             tuple(weight.shape),
             shadow.nbytes / 1e9,
             weight.numel() * weight.element_size() / 1e9,
@@ -430,7 +338,7 @@ class ScreenedLogitsProcessor(LogitsProcessor):
         return shadow
 
     def _build_shadow(self, weight: torch.Tensor):
-        """Factory for the cached shadow (overridden by verify_head_screen)."""
+        """Factory for the cached shadow."""
         return ShadowHead(weight, self.shadow_config())
 
     def _can_screen(
@@ -543,13 +451,6 @@ class ScreenedLogitsProcessor(LogitsProcessor):
 
 def register() -> None:
     """Route every LogitsProcessor construction to ScreenedLogitsProcessor."""
-    from atdev_serve.register import enabled
-
-    if "verify_head_screen" in enabled():
-        # verify_head_screen registers a subclass that also does the draft
-        # screening (sharing one shadow); only one OOT class per layer name.
-        logger.info("atdev shadow_head: provided by verify_head_screen")
-        return
     LogitsProcessor.register_oot(ScreenedLogitsProcessor)
     cfg = ScreenedLogitsProcessor.shadow_config()
     logger.info(

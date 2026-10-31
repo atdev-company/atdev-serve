@@ -1,26 +1,21 @@
-"""C32e verify-head screen at c=32 (ATDEV_VSPLIT_A4SCR=1, with vsplit_mtp's argmax-only greedy verify;
-default off). ROUNDING-LEVEL vs stock (not vs the deployed split head: more exact than it).
+"""Greedy verify-head screen at c=32 for vsplit_mtp's argmax-only MTP verify. ROUNDING-LEVEL vs stock
+(closer to the exact bf16 head than the split head it replaces at M <= 96).
 
-Deployed greedy verify head at M=96 (vsplit_mtp): exact bf16 cuBLAS over the 64k frequent rows (0.47 ms)
-+ int4 W4A8 Marlin tail over the other 182784 rows (0.70 ms) -> argmax of the two; the tail logits are
-used as final values (int4 weights, int8 activations).
+Split head at M=96: exact bf16 cuBLAS over the 64k frequent rows (0.47 ms) + int4 W4A8 Marlin tail
+over the other 182784 rows (0.70 ms) -> argmax of the two; the tail logits are used as final values
+(int4 weights, int8 activations).
 
 Here: approximate logits of the WHOLE vocabulary from an int4 g128 shadow of the lm_head on the c=32
-MarlinA4 W4A4 kernel (s4 g128 activations, tmb 6 cfg, ~0.55 ms at M=96, one weight pass), exact top-S
-candidate selection of those approx values (per-4096-chunk top-SC, merged), exact bf16 rescoring of the
-S candidates against the original bf16 lm_head rows (fp32 dot -> bf16, draft_vocab's rescoring kernel),
-argmax of the rescored values. The approximate values only choose candidates (like shadow_head /
-draft_vocab); the output token differs from the exact bf16 argmax only if the true argmax is not among
-the S best approx values of its row (or on exact bf16 ties).
-
-  ATDEV_VSPLIT_A4SCR=1          enable (needs ATDEV_OPT verify_split_head,vsplit_mtp + ATDEV_VSPLIT_FAST=1,
-                                the c=32 W4A4 stack: marlin_plus a4 build with the gate_up tmb 4/6/8 cfgs)
-  ATDEV_VSPLIT_A4SCR_CFG=S,SC   candidates per row / per 4096-chunk (default 16,4)
+MarlinA4 W4A4 kernel (s4 g128 activations, tmb 6 cfg, ~0.55 ms at M=96, one weight pass), exact top-16
+candidate selection of those approx values (per-4096-chunk top-4, merged), exact bf16 rescoring of the
+16 candidates against the original bf16 lm_head rows (fp32 dot -> bf16, draft_vocab's rescoring
+kernel), argmax of the rescored values. The approximate values only choose candidates (like
+shadow_head / draft_vocab); the output token differs from the exact bf16 argmax only if the true argmax
+is not among the 16 best approx values of its row (or on exact bf16 ties).
 """
 from __future__ import annotations
 
 import logging
-import os
 
 import torch
 import triton
@@ -28,13 +23,10 @@ import triton
 log = logging.getLogger("atdev_serve")
 
 CH = 4096
-# W4A4 cfg per tmb bucket (= the deployed gate_up 5120 -> 34816 entries of marlin_plus_a4k2q_cfg.json)
+# W4A4 cfg per tmb bucket (= the gate_up 5120 -> 34816 entries of marlin_plus_a4k2q_cfg.json)
 _CFG = {4: [64, 128, 6, 2, 4, 2, 0], 6: [64, 128, 6, 2, 6, 2, 0]}
-MAX_M = 96  # larger batches -> the deployed split head (caller)
-
-
-def enabled() -> bool:
-    return os.environ.get("ATDEV_VSPLIT_A4SCR", "0") == "1"
+MAX_M = 96  # larger batches -> the split head (caller)
+S_CAND, SC_CHUNK = 16, 4  # candidates per row / per 4096-chunk
 
 
 class A4Screen:
@@ -45,7 +37,7 @@ class A4Screen:
         self.n_org = n_org
         self.sh = ShadowHead(weight[:n_org], ShadowHeadConfig(bits=4, group_size=128, screen=1, a8=True))
         assert self.sh.backend == "marlin" and self.sh.a8 and self.sh.padded_n == self.sh.size_n
-        s, sc = (int(v) for v in os.environ.get("ATDEV_VSPLIT_A4SCR_CFG", "16,4").split(","))
+        s, sc = S_CAND, SC_CHUNK
         self.S, self.SC = s, sc
         self.NC = triton.next_power_of_2(triton.cdiv(n_org, CH))
         assert self.NC * sc <= 16384 and s & (s - 1) == 0 and sc <= s
@@ -86,7 +78,7 @@ class A4Screen:
                           self.k, list(_CFG[tmb]))
 
     def argmax(self, h: torch.Tensor) -> torch.Tensor | None:
-        """int64 [M] greedy token per row (None: M > MAX_M, use the deployed head)."""
+        """int64 [M] greedy token per row (None: M > MAX_M, use the split head)."""
         from atdev_serve import draft_vocab as dv
 
         m = h.shape[0]

@@ -111,7 +111,7 @@ Manual install, if you prefer:
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install vllm==0.31.0
-pip install ".[bench]"
+pip install .
 export CUDA_HOME=/usr/local/cuda          # the CUDA 13.0 toolkit with bin/nvcc
 export PATH=$CUDA_HOME/bin:$PATH
 ```
@@ -184,16 +184,10 @@ curl -s http://127.0.0.1:8100/health && echo healthy
 curl -s http://127.0.0.1:8100/v1/models
 ```
 
-Measure speed on your machine with the included benchmark (it starts and stops its own server, so stop
-yours first):
-
-```bash
-source atdev-env.sh
-bench/run_bench.sh c1 results/my_c1       # c=1 (1 client): prints mean / median decode tok/s per request
-bench/run_bench.sh c32 results/my_c32     # c=32 (32 concurrent clients): prints aggregate tok/s
-```
-
-You should get numbers close to the README (within a few percent on an A100 80GB SXM).
+To check speed, send a few long greedy requests (`"temperature":0`, `"max_tokens":1024`) after the
+first warm-up requests and look at the generation throughput vLLM logs every few seconds
+(`Avg generation throughput`). How the published numbers were measured is described in
+[BENCHMARKS.md](BENCHMARKS.md); on an A100 80GB SXM you should get close to the README numbers.
 
 ## 6. Troubleshooting
 
@@ -212,7 +206,7 @@ You should get numbers close to the README (within a few percent on an A100 80GB
 | `401` / `403` / `RepositoryNotFound` from Hugging Face | no access to a model repo | `huggingface-cli login` (or set `HF_TOKEN`) and check the repo names in `serve_c1.sh` |
 | Offline machine | models cannot download | download them elsewhere and pass local paths: `huggingface-cli download atdev-company/Qwen3.8-27B-atdev-c1 --local-dir /models/atdev-c1` (and the same for `RedHatAI/Qwen3.8-27B-INT4`), then `MODEL=/models/Qwen3.8-27B-INT4 W3_OVERLAY=/models/atdev-c1/w3/w3_gptqact_d30_mlpo.safetensors,/models/atdev-c1/w3/w3_gptqact_d30_qkv.safetensors DRAFTER=/models/atdev-c1/drafter HF_HUB_OFFLINE=1 ./serve_c1.sh`. c1 also reads the config of `z-lab/Qwen3.8-27B-DFlash2`, so pre-download it into `HF_HOME` first (`huggingface-cli download z-lab/Qwen3.8-27B-DFlash2`) |
 | Docker: `could not select device driver "nvidia"` | NVIDIA Container Toolkit missing | install it and restart Docker |
-| Slower than expected | different GPU, another job on the GPU, or measurement with `temperature > 0` | run `bench/run_bench.sh` on an idle A100 80GB |
+| Slower than expected | different GPU, another job on the GPU, or measurement with `temperature > 0` | measure on an idle A100 80GB with `temperature: 0`, after warm-up |
 
 ## 7. Settings you can change
 

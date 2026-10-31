@@ -167,24 +167,24 @@ curl -s http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/
 The model's `generation_config.json` defaults to temperature 1.0; the checks here pass
 `"temperature":0` explicitly. Pass the temperature explicitly for reproducible results.
 
-Optional performance check. Run Phase 3 (first start) before the benchmark, so the kernels and
-models are cached. It starts its own server, so stop the one from Phase 3 / 2A first (Phase 8). It
-needs the `bench` extra, which install.sh installs:
+Optional speed check (send it twice; the first requests after a start are slower):
 
 ```bash
-source "$REPO/atdev-env.sh"
-export CUDA_VISIBLE_DEVICES=<gpu index from P4>    # in this shell too; the serve scripts default to 0
-bench/run_bench.sh "$STACK" "$REPO/results/agent_$STACK"
-# c1  -> compare mean_decode_tps (not median, ~5% lower by design) with about 408.9 on an A100 80GB SXM (within ~5%)
-# c32 -> prints agg_output_tps;  expected about 2,730.9
+python3 - <<'PY'
+import json, time, urllib.request
+body = {"model": "m", "temperature": 0, "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "Write a Python function that merges two sorted lists, with tests."}]}
+req = urllib.request.Request("http://127.0.0.1:8100/v1/chat/completions", json.dumps(body).encode(),
+                             {"Content-Type": "application/json"})
+t = time.time(); r = json.load(urllib.request.urlopen(req)); dt = time.time() - t
+n = r["usage"]["completion_tokens"]; print(f"{n} tokens in {dt:.1f} s = {n / dt:.0f} tok/s")
+PY
 ```
 
-Docker path (same expectations; the results directory stays inside the removed container, the
-numbers are printed):
-
-```bash
-docker compose --profile "$STACK" run --rm "atdev-$STACK" bench/run_bench.sh "$STACK" /tmp/agent_$STACK
-```
+Expected on an idle A100 80GB with the `c1` stack: a few hundred tok/s for one request (the
+published 408.9 is the mean over 96 prompts; single prompts vary). The `c32` stack is tuned for many
+concurrent requests, so one request alone is slower there. The full measurement method is in
+`docs/BENCHMARKS.md`.
 
 ## Phase 6: failure branches
 
@@ -212,7 +212,7 @@ to the user.
 
 Report: the install path (Docker or venv), the stack (`c1` / `c32`), the GPU index, the endpoint URL
 (`http://<host>:8100/v1`, model name `m`), the time the first start took, the result of the Phase 5
-math check, and the benchmark numbers if they were run. Give the user the commands to stop and
+math check, and the speed check result if it was run. Give the user the commands to stop and
 restart the server (Phase 8).
 
 ## Phase 8: stop and restart

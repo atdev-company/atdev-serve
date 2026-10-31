@@ -1,35 +1,26 @@
 """Split verify head (ATDEV_OPT=verify_split_head) -- accuracy-gated, not exact.
 
-Target logits = exact bf16 for the N most frequent tokens F (draft_vocab
-order; contiguous bf16 copy of those rows) + a low-bit Marlin shadow (int4 or
-int8 g128) for the remaining tail rows, scattered into the usual
-[M, vocab] logits tensor so every downstream consumer (rejection sampler,
-sampler, logprobs) is unchanged.
+Target logits = the 65536 most frequent tokens F (draft_vocab order) in bf16 (or, with
+ATDEV_VSPLIT_FBITS=8, an int8 g128 Marlin shadow of those rows) + an int4 g128 Marlin shadow for
+the remaining tail rows.
 
-Bytes per verify pass (Qwen3.8, 248320 x 5120): stock 2.54 GB; N=32k + int4
-tail 0.33 + 0.55 = 0.88 GB; N=32k + int8 tail 0.33 + 1.11 = 1.44 GB.
+Bytes per verify pass (Qwen3.8, 248320 x 5120): stock 2.54 GB; F bf16 + int4 tail 0.67 + 0.47 GB.
 
-Output vs stock: the greedy token differs only if the stock argmax is a tail
-token whose shadow logit falls below the best F logit, or a tail token's
-shadow logit overtakes the true argmax (shadow error int4 ~ 0.1-1 logit,
-int8 ~ 0.01-0.1). ``verify_tail_stats`` measures the argmax match rate on
-real verify rows before this is turned on; the GSM8K / long-context gates
-decide. Sampling (temperature > 0) sees approximate tail logits.
+Output vs stock: the greedy token differs only if the stock argmax is a tail token whose shadow
+logit falls below the best F logit, or a tail token's shadow logit overtakes the true argmax. The
+GSM8K / long-context gates decide. Sampling (temperature > 0) sees approximate tail logits.
 
-Env: ATDEV_VSPLIT_SIZE (default 32768), ATDEV_VSPLIT_BITS (4 or 8, default 8),
-ATDEV_VSPLIT_MIN_ROWS (default 1: smaller batches use the stock GEMM),
-ATDEV_VSPLIT_FBITS (16 default = exact bf16 F rows; 8 = F rows as an int8 g128 Marlin shadow too,
-671 -> 336 MB at N=64k; 4 = int4 g128 (168 MB, the whole head low-bit); accuracy-gated like the tail).
+Greedy verify steps of dflash_tree (whose tree accept only reads the argmax) skip the [M, vocab]
+scatter + torch.argmax and run one fused two-part argmax (split_argmax) on the two GEMM outputs;
+F ids are kept ascending (same cuBLAS shape -> same values). Other calls get the usual [M, vocab]
+logits tensor, so every downstream consumer (rejection sampler, sampler, logprobs) is unchanged.
 
-ATDEV_VSPLIT_FAST=1 (default off; output bit-identical to the path above): on greedy
-dflash_tree verify steps (the only consumer is the tree accept's argmax) skip the
-[M, vocab] scatter + torch.argmax and run one fused two-part argmax (split_argmax)
-on the two GEMM outputs; F ids are kept ascending (same cuBLAS shape -> same values).
-  ATDEV_VSPLIT_STREAMS=1        tail Marlin on a side stream, overlapped with the bf16 GEMM
-  ATDEV_VSPLIT_TAIL_CFG=tk,tn,threads,stages,bps,mw
-                                tail via marlin_plus with this launch config; checked
-                                bit-identical to stock Marlin at load (else ignored).
-                                128,128,256,6,1,4 = stock tile, 6 stages (A100, M<=16).
+Env:
+  ATDEV_VSPLIT_FBITS=16|8       F rows exact bf16 (default) or int8 g128 Marlin shadow
+  ATDEV_VSPLIT_A8=1             tail GEMM on Marlin W4A8 (int8 per-token activations)
+  ATDEV_VSPLIT_STREAMS=1        argmax path: tail Marlin on a side stream, overlapped with the F GEMM
+For the W4A16 tail at M <= 16 the tail runs on marlin_plus with a 6-stage pipeline of the stock tile
+(128,128,256,6,1,4), checked bit-identical to stock Marlin at load (else stock Marlin).
 """
 
 from __future__ import annotations
@@ -44,53 +35,21 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 _ATTR = "_atdev_vsplit"
-
-
-class W8A8Head:
-    """int8 per-channel (symmetric, one fp32 scale per output row) weight x per-token int8
-    activation (vLLM per_token_quant_int8, the A8 tail's quant) on CUTLASS int8 tensor cores
-    (vllm cutlass_scaled_mm): one weight pass for any M. Rounding-level vs bf16 like the
-    shadows; ATDEV_VSPLIT_FBITS=8 + ATDEV_VSPLIT_FA8=1."""
-
-    def __init__(self, weight: torch.Tensor):
-        n, k = weight.shape
-        assert n % 16 == 0 and k % 16 == 0
-        w = weight.float()
-        s = (w.abs().amax(1, keepdim=True) / 127.0).clamp_min(1e-12)        # [N, 1]
-        q = torch.round(w / s).clamp_(-127, 127).to(torch.int8)            # [N, K]
-        del w
-        self.qt = q.t()            # [K, N] column-major view of the row-major [N, K] codes
-        self.scale = s.contiguous()                                         # [N, 1] fp32
-        self.size_n, self.size_k = n, k
-        self.dtype = weight.dtype
-        self.nbytes = q.numel() + s.numel() * 4
-
-    def logits_q(self, a_q: torch.Tensor, a_s: torch.Tensor) -> torch.Tensor:
-        """a_q int8 [M, K], a_s fp32 [M, 1] (per_token_quant_int8 output)."""
-        from vllm import _custom_ops as ops
-
-        return ops.cutlass_scaled_mm(a_q, self.qt, a_s, self.scale, self.dtype)
-
-    def logits(self, h: torch.Tensor) -> torch.Tensor:
-        from vllm.model_executor.layers.quantization.utils.int8_utils import per_token_quant_int8
-
-        a_q, a_s = per_token_quant_int8(h)
-        return self.logits_q(a_q, a_s)
-
-    approx_logits = logits
+_SIZE = 65536  # F rows (first ids of draft_vocab's frequency order)
+_BITS = 4  # tail shadow bits
+# marlin_plus launch config for the W4A16 tail at M <= 16 (tk, tn, threads, stages, bps, max_tmb):
+# the stock tile with a 6-stage pipeline
+_TAIL_CFG = (128, 128, 256, 6, 1, 4)
 
 
 class SplitHead:
-    def __init__(self, weight: torch.Tensor, n_org: int, size: int, bits: int,
-                 f_ids: torch.Tensor | None = None, sort_f: bool = False):
+    def __init__(self, weight: torch.Tensor, n_org: int, size: int, bits: int):
+        from atdev_serve import draft_vocab
         from atdev_serve.shadow_head import ShadowHead, ShadowHeadConfig
 
-        if f_ids is None:
-            from atdev_serve import draft_vocab
-            f_ids = draft_vocab.load_ids(draft_vocab.DraftVocabConfig(size=size), n_org)
+        f_ids = draft_vocab.load_ids(draft_vocab.DraftVocabConfig(size=size), n_org)
         f_ids = f_ids.to(weight.device)
-        if sort_f:  # ATDEV_VSPLIT_FAST: ascending ids (split_argmax tie rule); same values
-            f_ids = f_ids.sort().values
+        f_ids = f_ids.sort().values  # ascending ids (split_argmax tie rule); same values
         mask = torch.ones(weight.shape[0], dtype=torch.bool, device=weight.device)
         mask[f_ids] = False
         self.f_ids, self.t_ids = f_ids, mask.nonzero().squeeze(1)
@@ -101,28 +60,16 @@ class SplitHead:
         self.tail = ShadowHead(tw, ShadowHeadConfig(bits=bits, group_size=128, screen=1, a8=a8))
         del tw
         # ATDEV_VSPLIT_FBITS=8: the F part as an int8 g128 Marlin shadow too (accuracy-gated; the
-        # bf16 copy fw stays for dtype / device / tests)
+        # bf16 copy fw stays for dtype / device)
         self.fbits = int(os.environ.get("ATDEV_VSPLIT_FBITS", "16"))
-        if self.fbits not in (4, 8, 16):
-            raise ValueError(f"ATDEV_VSPLIT_FBITS must be 4, 8 or 16, got {self.fbits}")
-        # ATDEV_VSPLIT_FA8=1 (with FBITS=8): F as int8 per-channel W8A8 (per-token int8 activations,
-        # CUTLASS int8 GEMM, one launch at any M) instead of the g128 W8A16 Marlin shadow
-        # ATDEV_VSPLIT_FA8=2: int8 g128 W8A16 Triton kernel (bf16 activations, one pass at M<=128)
-        fa8 = os.environ.get("ATDEV_VSPLIT_FA8", "0") if self.fbits == 8 else "0"
-        self.fa8 = fa8 == "1"
-        if fa8 == "2":
-            from atdev_serve.w8_head import W8G128Head
-            self.fq = W8G128Head(self.fw)
-        elif self.fa8:
-            self.fq = W8A8Head(self.fw)
-        else:
-            self.fq = (ShadowHead(self.fw, ShadowHeadConfig(bits=self.fbits, group_size=128,
-                                                            screen=1))
-                       if self.fbits != 16 else None)
+        if self.fbits not in (8, 16):
+            raise ValueError(f"ATDEV_VSPLIT_FBITS must be 8 or 16, got {self.fbits}")
+        self.fq = (ShadowHead(self.fw, ShadowHeadConfig(bits=self.fbits, group_size=128, screen=1))
+                   if self.fbits != 16 else None)
         self.nbytes = (self.fq.nbytes if self.fq is not None else self.fw.numel() * 2) + self.tail.nbytes
 
     def f_logits(self, h: torch.Tensor) -> torch.Tensor:
-        """Logits of the F rows: exact bf16 (default) or the int8 / int4 shadow (ATDEV_VSPLIT_FBITS)."""
+        """Logits of the F rows: exact bf16 (default) or the int8 shadow (ATDEV_VSPLIT_FBITS=8)."""
         if self.fq is not None:
             return self.fq.approx_logits(h)
         return F.linear(h, self.fw)
@@ -133,7 +80,7 @@ class SplitHead:
         out.index_copy_(1, self.t_ids, self.tail.approx_logits(h))
         return out
 
-    # -- ATDEV_VSPLIT_FAST: argmax-only verify (greedy tree steps) -----------------
+    # -- argmax-only verify (greedy tree steps / vsplit_mtp) -----------------------
     # Same two GEMMs (cuBLAS bf16 head part, Marlin int4 tail) -> same bf16 logit
     # values; the [M, vocab] scatter + torch.argmax are replaced by one fused
     # argmax over both parts that reproduces torch.argmax exactly (first = lowest
@@ -153,12 +100,11 @@ class SplitHead:
         self.streams = os.environ.get("ATDEV_VSPLIT_STREAMS", "0") == "1"
         self.side = torch.cuda.Stream(device=dev) if self.streams else None
         self.tail_cfg = None
-        cfg = os.environ.get("ATDEV_VSPLIT_TAIL_CFG", "")
-        if cfg and self.tail.backend == "marlin" and not self.tail.a8:
-            self.tail_cfg = [int(x) for x in cfg.split(",")]
+        if not self.tail.a8:
+            self.tail_cfg = list(_TAIL_CFG)
             if not self._check_tail_cfg():
-                logger.warning("atdev verify_split_head: ATDEV_VSPLIT_TAIL_CFG=%s is not "
-                               "bit-identical to stock Marlin on this head; ignored", cfg)
+                logger.warning("atdev verify_split_head: tail launch config %s is not "
+                               "bit-identical to stock Marlin on this head; ignored", _TAIL_CFG)
                 self.tail_cfg = None
         self._fast_ready = True
 
@@ -193,8 +139,8 @@ class SplitHead:
         return True
 
     def argmax(self, h: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
-        """int64 [M] == torch.argmax(self.logits(h, .)[:, :n_org], -1), bit-exact.
-        Needs ascending f_ids (sort_f=True). out: optional int64 [>= M] buffer (written [:M])."""
+        """int64 [M] == torch.argmax(self.logits(h, .)[:, :n_org], -1), bit-exact (f_ids are ascending).
+        out: optional int64 [>= M] buffer (written [:M])."""
         self._fast_init()
         if self.side is not None:
             cur = torch.cuda.current_stream(h.device)
@@ -208,19 +154,7 @@ class SplitHead:
         else:
             fl = self.f_logits(h)
             tlog = self.tail_logits(h)
-        _post_head_hook()
         return split_argmax(fl, self.f_ids32, tlog, self.t_ids32, None, self.nt_valid, out=out)
-
-
-
-
-def _post_head_hook() -> None:
-    """dflash_tree ATDEV_FC_EARLY=2: start the drafter fc on its side stream after the head GEMMs."""
-    import sys
-
-    dt = sys.modules.get("atdev_serve.dflash_tree")
-    if dt is not None and dt.S.fc_late is not None:
-        dt.fc_post_head()
 
 
 import triton  # noqa: E402
@@ -286,7 +220,7 @@ def split_argmax(fl: torch.Tensor, f_ids: torch.Tensor, tl_: torch.Tensor,
     assert tl_.shape[0] == m and fl.stride(1) == 1 and tl_.stride(1) == 1
     if out is None:
         out = torch.empty(m, dtype=torch.int64, device=fl.device)
-    else:  # caller-owned persistent buffer (dflash_tree ATDEV_TREE_ACCEPT_GRAPH)
+    else:  # caller-owned persistent buffer (dflash_tree's accept graph)
         assert out.dtype == torch.int64 and out.is_contiguous() and out.numel() >= m
         out = out[:m]
     if m == 0:
@@ -325,10 +259,11 @@ def register() -> None:
         UnquantizedEmbeddingMethod,
     )
 
-    fast = os.environ.get("ATDEV_VSPLIT_FAST", "0") == "1"
-    size = int(os.environ.get("ATDEV_VSPLIT_SIZE", "32768"))
-    bits = int(os.environ.get("ATDEV_VSPLIT_BITS", "8"))
-    min_rows = int(os.environ.get("ATDEV_VSPLIT_MIN_ROWS", "1"))
+    from atdev_serve.register import enabled
+
+    size, bits = _SIZE, _BITS
+    # W4A4 screen + exact rescoring for the argmax-only MTP verify (vsplit_mtp)
+    a4scr = "vsplit_mtp" in enabled()
     orig = LogitsProcessor._apply_head
 
     def _apply_head(self, lm_head, hidden_states, embedding_bias):
@@ -336,7 +271,7 @@ def register() -> None:
         ok = (
             embedding_bias is None
             and hidden_states.dim() == 2
-            and hidden_states.shape[0] >= min_rows
+            and hidden_states.shape[0] >= 1
             and hidden_states.is_cuda
             and getattr(lm_head, "tp_size", 1) == 1
             and isinstance(getattr(lm_head, "quant_method", None),
@@ -352,21 +287,20 @@ def register() -> None:
             if torch.cuda.is_current_stream_capturing():
                 return orig(self, lm_head, hidden_states, embedding_bias)
             n_org = w.shape[0] - lm_head.shard_indices.num_org_vocab_padding
-            sh = SplitHead(w.data, n_org, size, bits, sort_f=fast)
-            if fast:
-                sh._fast_init()
-            from atdev_serve import vsplit_a4scr  # C32e: W4A4 screen + exact rescoring (opt-in)
-            sh.a4scr = vsplit_a4scr.A4Screen(w.data, n_org) if vsplit_a4scr.enabled() else None
+            sh = SplitHead(w.data, n_org, size, bits)
+            sh._fast_init()
+            from atdev_serve import vsplit_a4scr
+
+            sh.a4scr = vsplit_a4scr.A4Screen(w.data, n_org) if a4scr else None
             setattr(lm_head, _ATTR, sh)
             logger.warning("atdev verify_split_head: F=%d exact + %d tail int%d (%.3f GB vs %.2f GB)"
-                           "%s", sh.f_ids.numel(), sh.t_ids.numel(), bits, sh.nbytes / 1e9,
-                           w.numel() * 2 / 1e9,
-                           f" FAST(ok={sh.fast_ok}, streams={sh.streams}, tail_cfg={sh.tail_cfg})"
-                           if fast else "")
-        if fast and sh.fast_ok and _tree_argmax_only(self, hidden_states):
+                           " (argmax ok=%s, streams=%s, tail_cfg=%s)", sh.f_ids.numel(),
+                           sh.t_ids.numel(), bits, sh.nbytes / 1e9, w.numel() * 2 / 1e9,
+                           sh.fast_ok, sh.streams, sh.tail_cfg)
+        if sh.fast_ok and _tree_argmax_only(self, hidden_states):
             from atdev_serve import dflash_tree
 
-            # ATDEV_TREE_ACCEPT_GRAPH: argmax into the accept graph's persistent input buffer
+            # argmax into the accept graph's persistent input buffer
             am = sh.argmax(hidden_states, out=dflash_tree.am_out(hidden_states.shape[0]))
             # the tree accept reads only the argmax; this placeholder is never read
             logits = torch.empty(hidden_states.shape[0], w.shape[0], dtype=hidden_states.dtype,

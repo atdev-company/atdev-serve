@@ -85,7 +85,7 @@ __device__ __forceinline__ void mp_fused_quant_prologue(
         dst8[(size_t)row * (lda_dst / 8) + v] = o;
       }
     } else {
-      // P3 U8: identical int8 values, plus the exact per-(row, 128-group) sum of the codes
+      // identical int8 values, plus the exact per-(row, 128-group) sum of the codes
       // (16 consecutive 8-element vectors = one group = 16 consecutive lanes)
       for (int base = 0; base < nvec; base += threads) {
         const int v = base + threadIdx.x;
@@ -115,7 +115,7 @@ __device__ __forceinline__ void mp_fused_quant_prologue(
 }
 
 // ---------------------------------------------------------------------------
-// P1 stage 2 chain phases (run by the whole grid between GEMM jobs)
+// chain phases (run by the whole grid between GEMM jobs)
 // ---------------------------------------------------------------------------
 // residual add + GemmaRMSNorm, one CTA per row (CTAs >= m idle). fp32 math as
 // vllm.ir.ops.fused_add_rms_norm: x = h + res; res_out = bf16(x);

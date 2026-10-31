@@ -1,17 +1,18 @@
-"""C32c consumer-sum (ATDEV_C32C_CSUM=1, inside fused_quant): the W4A4 GEMMs whose only consumer is the next
-residual-add + RMSNorm -> s4 producer (attn o_proj, GDN out_proj, MLP down except the last layer's) run the
-MarlinA4 csum build (A4_PAR_REDUCE=7): every split-K slice stores its fp32 partial to P[slice][row][col]
-and exits -- no lock chain, no bf16 write. The norm producer (csrc/c32c_csum.cu, c32_prod's CUDA norm with
-the x load replaced) rebuilds x = bf16(P[0] + ... + P[cnt-1]) in slice order (= the serial chain's fp32
-order, so the GEMM-output part is bit-identical) and continues as norm_a4. The CUDA norm itself differs from
-fused_quant's Triton chunk kernel only on rare fp32 ties of bf16((rstd x)(w + 1)) (c32_prod.py) -> the
-change is rounding-level overall.
+"""Consumer-sum W4A4 GEMMs (inside fused_quant): the GEMMs whose only consumer is the next residual-add
++ RMSNorm -> s4 producer (attn o_proj, GDN out_proj) run the MarlinA4 csum build (A4_PAR_REDUCE=7):
+every split-K slice stores its fp32 partial to P[slice][row][col] and exits -- no lock chain, no bf16
+write. The norm producer (csrc/c32c_csum.cu) rebuilds x = bf16(P[0] + ... + P[cnt-1]) in slice order
+(= the serial chain's fp32 order, so the GEMM-output part is bit-identical) and continues as the
+residual add + Gemma RMSNorm -> s4 producer. The CUDA norm differs from fused_quant's Triton chunk
+kernel only on rare fp32 ties of bf16((rstd x)(w + 1)).
 
 Data flow: the csum GEMM op returns an unwritten bf16 [M, N] placeholder and tags P with its data_ptr; the
 next atdev_norm_quant call consumes P when its x is that placeholder (producer and consumer are adjacent on
-the stream; the decision is taken in Python at capture time, like marlin_plus' sa_for tag). Any other
-reader of a tagged placeholder would see garbage, so only the three call sites above use it, and a norm
-call on a tagged x that cannot take the a4 path first materialises x (csum_to_bf16).
+the stream; the decision is taken in Python at capture time). Any other reader of a tagged placeholder
+would see garbage, so only the call sites above use it, and a norm call on a tagged x that cannot take
+the a4 path first materialises x (csum_to_bf16).
+
+The s4 quotient uses the branch-free form (-DMK=1), bit-identical to div.rn (see fused_quant).
 """
 from __future__ import annotations
 
@@ -21,29 +22,20 @@ import os
 import torch
 
 log = logging.getLogger("atdev_serve")
-_EXT: list = [None, None]
+_EXT: list = [None]
 _ST: dict = {"for": 0, "K": 0, "grid": 0, "n": 0}
 _P: dict = {}
 SMAX, ROWS, TN, NMAX = 4, 128, 64, 5120
-_CHK = [os.environ.get("ATDEV_C32_MKCHK", "") != ""]
 _STATS = {"gemm": 0, "norm": 0, "mat": 0}
 
 
-def enabled() -> bool:
-    return os.environ.get("ATDEV_C32C_CSUM", "0") in ("1", "2")  # 2: + MLP down
-
-
-def ext(mk: bool | None = None):
-    """mk None: deployed variant (ATDEV_C32_MK=1 -> C32h-mk branch-free quotient, bit-identical); True/False: that one"""
-    if mk is None:
-        mk = os.environ.get("ATDEV_C32_MK", "0") == "1"
-    if _EXT[int(mk)] is None:
+def ext():
+    if _EXT[0] is None:
         from torch.utils.cpp_extension import load
         src = os.path.join(os.path.dirname(__file__), "csrc", "c32c_csum.cu")
-        _EXT[int(mk)] = load(name="atdev_c32c_csum" + ("_mk" if mk else ""), sources=[src], verbose=False,
-                             extra_cuda_cflags=["-O3", "-gencode=arch=compute_80,code=sm_80", "-std=c++17"]
-                             + (["-DMK=1"] if mk else []))
-    return _EXT[int(mk)]
+        _EXT[0] = load(name="atdev_c32c_csum_mk", sources=[src], verbose=False,
+                       extra_cuda_cflags=["-O3", "-gencode=arch=compute_80,code=sm_80", "-std=c++17", "-DMK=1"])
+    return _EXT[0]
 
 
 _MOD: list = [None]
@@ -116,11 +108,6 @@ def materialise(x: torch.Tensor) -> None:
 
 def norm_a4(x, r, w, gs, xb, ro, apk, as_, m, eps, m_pad, tmb) -> None:
     ext().csum_norm_a4(_pbuf(x.device), _ST["K"], _ST["grid"], r, w, gs, xb, ro, apk, as_, m, eps, m_pad, tmb)
-    if _CHK[0]:  # C32h-mk shadow check: the other variant on the same P slots (idempotent) into scratch
-        from atdev_serve import c32hmk_check as ck
-        ck.check_csum(lambda pk2, s2, xb2, ro2: ext(not ck.MK).csum_norm_a4(
-            _pbuf(x.device), _ST["K"], _ST["grid"], r, w, gs, xb2, ro2, pk2, s2, m, eps, m_pad, tmb),
-            apk, as_, xb, ro, w.shape[0], m_pad, tmb)
     _ST["for"] = 0
     if _STATS["norm"] == 0:
         log.warning("atdev c32c_csum: norm producer sums the GEMM slice partials (M=%d)", m)

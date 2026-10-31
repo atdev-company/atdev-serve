@@ -1,4 +1,4 @@
-// marlin_plus W3 host side (bet #2): vLLM Marlin W4A16 launch logic (copied from mp_host.cu,
+// marlin_plus W3 host side: vLLM Marlin W4A16 launch logic (copied from mp_host.cu,
 // bf16 activations only) for the 3-bit planar weight stream (gen/marlin_template_w3.h).
 // B: int32 [K/16, 3, N/2] (planes), produced by atdev_serve.w3_mixed.pack_w3 from the Marlin
 // int4 repack; scales: the unchanged Marlin-permuted bf16 [K/128, N].

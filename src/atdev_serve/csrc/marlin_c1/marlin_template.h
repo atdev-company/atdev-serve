@@ -196,18 +196,12 @@ __device__ inline void wait_negative_and_add(int* lock) {
   __syncthreads();
 }
 
-#ifndef MP_OVL_MAXS
-  #define MP_OVL_MAXS 6
-#endif
 #include "mp_prologue.inc"
-// E6: the epilogue mode is a compile-time constant of the build (one extension per mode, marlin_c1_build);
-// the runtime epi.mode must match (checked on the host). E6_RSTD_AT: where a consumer computes rstd
-// (0: loads before the pipeline fill, sum after; 1: all before the fill; 2: in write_result).
+// The fused-epilogue mode (E6_MODE) is a compile-time constant of the build (one extension per mode,
+// marlin_c1_build); the runtime epi.mode must match (checked on the host). A consumer loads its rstd partials
+// before the pipeline fill and sums them after it.
 #ifndef E6_MODE
   #define E6_MODE 0
-#endif
-#ifndef E6_RSTD_AT
-  #define E6_RSTD_AT 0
 #endif
 
 template <const vllm::ScalarTypeId a_type_id,  // A ScalarType id
@@ -260,7 +254,7 @@ __device__ __forceinline__ void MarlinBody(
     // barrier (grid_bar[0] = count, grid_bar[1] = generation).
     const int4* __restrict__ A_src, int lda_src, int* grid_bar,
     const float* __restrict__ a_gscale_ptr, const MpEpi epi) {
-  // E6 consumer row rstd. 128 B so the dynamic smem base keeps its bank alignment (a 64-B static array
+  // consumer row rstd. 128 B so the dynamic smem base keeps its bank alignment (a 64-B static array
   // shifts Marlin's swizzled layouts by 16 banks: +2.4 us on gate_up)
   __shared__ __align__(128) float sh_r[32];
   if constexpr (a_type_id == vllm::kS8.id()) {
@@ -1120,25 +1114,14 @@ __device__ __forceinline__ void MarlinBody(
     }
   };
 
-  // marlin_plus MP_FOLD: (a) the first mma of every group accumulator uses
+  // int8-activation group fold: (a) the first mma of every group accumulator uses
   // C = 0 (no zeroing MOVs after each fold); (b) with thread_k = 64 a 128-group
   // spans two stages, so fold int32 partials into frag_c once per group instead
   // of once per stage. Integer arithmetic -> bit-identical to stock.
-#if defined(MP_FOLD) && MP_FOLD
   constexpr bool mp_fold_on = is_a_8bit && group_blocks > 2 && b_sh_wr_iters == 2;
-#else
-  constexpr bool mp_fold_on = false;
-#endif
   constexpr bool mp_fold2 = mp_fold_on && group_blocks == 2 * thread_k_blocks;
-  // MP_FOLD >= 2: defer the int32 group fold to the next group's first k-step
-  // (just before its C=0 mma reuses the accumulator), so the IMADs never wait
-  // on the mma results issued in the same k-step. Pending folds are flushed at
-  // slice end (mp_flush_fold). Integer arithmetic -> bit-identical.
-#if defined(MP_FOLD) && MP_FOLD >= 2
-  constexpr bool mp_defer = mp_fold_on && a_type == vllm::kS8;
-#else
+  // deferred group fold (disabled in this build; mp_flush_fold is a no-op)
   constexpr bool mp_defer = false;
-#endif
   int mp_sv[2][2][2];  // saved int group scales [j][half][g%2]
   bool mp_pending = false;
   auto mp_fold_j = [&](int j) {
@@ -1171,18 +1154,10 @@ __device__ __forceinline__ void MarlinBody(
       FragB frag_b[2];
 
       if (is_a_8bit && b_type.size_bits() == 4 && !has_zp) {
-#if defined(MP_ABL) && MP_ABL == 2
-        // ablation (numerically wrong): no int4->int8 dequant
-        reinterpret_cast<int*>(&frag_b)[0] = frag_b_quant[k2][0][j * 2];
-        reinterpret_cast<int*>(&frag_b)[1] = frag_b_quant[k2][0][j * 2] >> 4;
-        reinterpret_cast<int*>(&frag_b)[2] = frag_b_quant[k2][0][j * 2 + 1];
-        reinterpret_cast<int*>(&frag_b)[3] = frag_b_quant[k2][0][j * 2 + 1] >> 4;
-#else
         dequant_data(frag_b_quant[k2][0][j * 2],
                      reinterpret_cast<scalar_32bit_t*>(&frag_b));
         dequant_data(frag_b_quant[k2][0][j * 2 + 1],
                      reinterpret_cast<scalar_32bit_t*>(&frag_b) + 2);
-#endif
       } else if (is_a_8bit && b_type.size_bits() == 4 && has_zp) {
         int off = (threadIdx.x / 32) % 2 * 2 + j;
         int zp = (frag_qzp[k2][0] >> (off * 8)) & 0xF;
@@ -1219,11 +1194,7 @@ __device__ __forceinline__ void MarlinBody(
       }
 
       if constexpr (group_blocks != -1) {
-#if defined(MP_ABL) && MP_ABL == 1
-        if (false) {  // ablation (numerically wrong): no group fold
-#else
         if (group_blocks == 2 || (mp_fold_on ? mp_last : k == 1)) {
-#endif
           if constexpr (a_type == vllm::kS8 && mp_defer) {
             mp_sv[j][0][0] = (int)reinterpret_cast<uint16_t*>(&frag_s[k2][j * 2][0])[0];
             mp_sv[j][0][1] = (int)reinterpret_cast<uint16_t*>(&frag_s[k2][j * 2][0])[1];
@@ -1491,11 +1462,7 @@ __device__ __forceinline__ void MarlinBody(
     constexpr int num_floats = thread_m_blocks * (is_a_8bit ? 2 : 4) * 2 * 4;
     constexpr int th_size = num_floats * sizeof(float) / 16;
 
-#if defined(MP_OVLCHAIN) && MP_OVLCHAIN
-    int c_cur_offset = locks_off * MP_OVL_MAXS * c_size;  // disjoint from other locks' OVL slots
-#else
     int c_cur_offset = locks_off * c_size;
-#endif
 
     if (!is_th_active) {
       return;
@@ -1525,80 +1492,11 @@ __device__ __forceinline__ void MarlinBody(
     }
   };
 
-#if defined(MP_OVLCHAIN) && MP_OVLCHAIN
-  // P3 overlapped split-K chain (bit-exact to the serial lock chain): non-last slices store their own
-  // fp32 partial to slot (locks_off, slice_idx) and arrive without waiting; the last slice waits once
-  // for slice_count-1 arrivals and sums t = p0; t += p1; ...; frag_c += t, which is exactly the serial
-  // chain's p_{n-1} + (... + (p1 + p0)) (fp32 add is commutative). Slots: MP_OVL_MAXS per lock.
-  auto ovl_reduce_fp32 = [&](bool last) {
-    constexpr int tb_m = thread_m_blocks * 16;
-    constexpr int tb_n = thread_n_blocks * 16;
-    constexpr int c_size = tb_m * tb_n * sizeof(float) / 16;
-    constexpr int active_threads = 32 * tb_n_warps;
-    constexpr int num_floats = thread_m_blocks * (is_a_8bit ? 2 : 4) * 2 * 4;
-    constexpr int th_size = num_floats * sizeof(float) / 16;
-    const bool is_th_active = threadIdx.x < active_threads;
-    int4* slots = C_tmp + (size_t)locks_off * MP_OVL_MAXS * c_size;
-    if (!last) {
-      if (is_th_active) {
-        int4* frag_c_ptr = reinterpret_cast<int4*>(&frag_c);
-        int4* dst = slots + (size_t)slice_idx * c_size;
-  #pragma unroll
-        for (int k = 0; k < th_size; k += (m_block_size_8 ? 2 : 1))
-          __stcg(&dst[active_threads * k + threadIdx.x], frag_c_ptr[k]);
-      }
-      __syncthreads();
-      if (threadIdx.x == 0) {
-        asm volatile("fence.acq_rel.gpu;\n");
-        asm volatile("red.relaxed.gpu.global.add.s32 [%0], %1;\n" : : "l"(&locks[locks_off]), "r"(1));
-      }
-    } else {
-      if (threadIdx.x == 0) {
-        int state = -1;
-        do
-          asm volatile("ld.global.acquire.gpu.b32 %0, [%1];\n" : "=r"(state) : "l"(&locks[locks_off]));
-        while (state != slice_count - 1);
-      }
-      __syncthreads();
-      // stage the predecessors' partials in the (idle) pipeline smem with cp.async (no data registers,
-      // one L2 round trip), then sum in slice order from smem
-      const int nsl = slice_count - 1;
-      int4* S = sh_new;
-      if (is_th_active) {
-  #pragma unroll 1
-        for (int sl = 0; sl < nsl; sl++) {
-  #pragma unroll
-          for (int k = 0; k < th_size; k += (m_block_size_8 ? 2 : 1))
-            cp_async4(&S[(sl * th_size + k) * active_threads + threadIdx.x],
-                      &slots[(size_t)sl * c_size + active_threads * k + threadIdx.x]);
-        }
-      }
-      cp_async_fence();
-      cp_async_wait<0>();
-      if (is_th_active) {
-        float* frag_c_ptr = reinterpret_cast<float*>(&frag_c);
-  #pragma unroll
-        for (int k = 0; k < th_size; k += (m_block_size_8 ? 2 : 1)) {
-          float4 t = *reinterpret_cast<float4*>(&S[k * active_threads + threadIdx.x]);
-  #pragma unroll 1
-          for (int sl = 1; sl < nsl; sl++) {
-            float4 u = *reinterpret_cast<float4*>(&S[(sl * th_size + k) * active_threads + threadIdx.x]);
-            t.x += u.x; t.y += u.y; t.z += u.z; t.w += u.w;
-          }
-          frag_c_ptr[k * 4 + 0] += t.x; frag_c_ptr[k * 4 + 1] += t.y;
-          frag_c_ptr[k * 4 + 2] += t.z; frag_c_ptr[k * 4 + 3] += t.w;
-        }
-      }
-      __syncthreads();  // S aliases sh_red (write_result)
-      if (threadIdx.x == 0) locks[locks_off] = 0;
-    }
-  };
-#endif
 
   // Write out the reduce final result in the correct layout. We only actually
   // reshuffle matrix fragments in this step, the reduction above is performed
   // in fragment layout.
-  // E6 epilogue helpers (c_scalar_t = bf16 on the c=1 path). 2 * thread_n_blocks consecutive lanes share
+  // fused-epilogue helpers (c_scalar_t = bf16 on the c=1 path). 2 * thread_n_blocks consecutive lanes share
   // one output row in the final store loop of write_result.
   auto e6_unpack = [&](const int4& v, float* f) {
     const __nv_bfloat162* h2 = reinterpret_cast<const __nv_bfloat162*>(&v);
@@ -1629,17 +1527,13 @@ __device__ __forceinline__ void MarlinBody(
       s = fmaf(x[e], x[e], s);
       y[e] = x[e] * (w[e] + 1.f);
     }
-#if !(defined(E6_ABL) && E6_ABL == 5)
     epi.C2[gidx] = e6_pack(x);
-#endif
     C[gidx] = e6_pack(y);
-#if !(defined(E6_ABL) && E6_ABL == 4)
     const unsigned msk = __activemask();
   #pragma unroll
     for (int o = thread_n_blocks; o > 0; o >>= 1) s += __shfl_xor_sync(msk, s, o);
     if (threadIdx.x % (2 * thread_n_blocks) == 0)
       epi.P[row * (prob_n / (16 * thread_n_blocks)) + tile] = s;
-#endif
   };
   auto e6_silu_store = [&](const int4 hv, int gidx, int gstride, int tile) {
     const unsigned msk = __activemask();
@@ -1656,21 +1550,13 @@ __device__ __forceinline__ void MarlinBody(
       e6_unpack(pv, u);
   #pragma unroll
       for (int e = 0; e < 8; e++) {
-#if defined(E6_SILU) && E6_SILU == 1
         y[e] = __fdividef(g[e], 1.f + __expf(-g[e])) * u[e];
-#elif defined(E6_SILU) && E6_SILU == 3
-        y[e] = g[e] * __frcp_rn(1.f + expf(-g[e])) * u[e];
-#elif defined(E6_SILU) && E6_SILU == 2
-        y[e] = g[e] * u[e];  // ablation: no transcendental
-#else
-        y[e] = (g[e] / (1.f + expf(-g[e]))) * u[e];
-#endif
       }
       C[row * (gstride / 2) + tile * thread_n_blocks + lane_c] = e6_pack(y);
     }
   };
 
-  // E6 producer: the residual / norm-weight chunks of the final store loop, loaded before the split-K
+  // fused-epilogue producer: the residual / norm-weight chunks of the final store loop, loaded before the split-K
   // reduction wait so their latency is hidden (same index math as write_result's store loop).
   constexpr int E6_NI = div_ceil(16 * thread_m_blocks, threads / (2 * thread_n_blocks));
   int4 e6_rpre[E6_NI];
@@ -1689,26 +1575,6 @@ __device__ __forceinline__ void MarlinBody(
   };
 
   auto write_result = [&](bool last) {
-    if constexpr (E6_MODE >= 2 && E6_RSTD_AT == 2) {
-      float pv[threads / 16 >= 1 ? 10 : 10];
-      const int row = threadIdx.x / (threads / 16), sub = threadIdx.x % (threads / 16);
-  #pragma unroll
-      for (int q = 0; q < 10; q++) {
-        const int t = sub + q * (threads / 16);
-        pv[q] = (row < prob_m && t < epi.T_in) ? epi.Pin[row * epi.T_in + t] : 0.f;
-      }
-      float s = 0.f;
-  #pragma unroll
-      for (int q = 0; q < 10; q++) s += pv[q];
-  #pragma unroll
-      for (int o = threads / 32; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
-      if (sub == 0) {
-        const float rr = row < prob_m ? rsqrtf(s / (float)epi.n_norm + epi.eps) : 0.f;
-        sh_r[row] = rr;
-        if (epi.Rout != nullptr && blockIdx.x == 0 && row < prob_m) epi.Rout[row] = rr;
-      }
-      __syncthreads();
-    }
     int c_gl_stride = prob_n / 8;
     constexpr int c_sh_stride = 2 * thread_n_blocks + 1;
     int c_gl_wr_delta = c_gl_stride * (threads / (2 * thread_n_blocks));
@@ -1787,13 +1653,9 @@ __device__ __forceinline__ void MarlinBody(
                   frag_bias[j / 2][2 * (j % 2) + 1]);
           } else {
             int wr = c_sh_wr + 8 * j;
-            // E6 consumer: rows lane/4 (c0, c1) and lane/4 + 8 (c2, c3) of m-block i
+            // fused-epilogue consumer: rows lane/4 (c0, c1) and lane/4 + 8 (c2, c3) of m-block i
             float r_lo = 1.f, r_hi = 1.f;
-#if defined(E6_ABL) && E6_ABL == 2
-            if constexpr (false) {  // ablation: no rstd scaling
-#else
             if constexpr (E6_MODE >= 2) {
-#endif
               r_lo = sh_r[16 * i + (threadIdx.x % 32) / 4];
               r_hi = sh_r[16 * i + (threadIdx.x % 32) / 4 + 8];
             }
@@ -1816,7 +1678,6 @@ __device__ __forceinline__ void MarlinBody(
     }
     __syncthreads();
 
-#if defined(E6_SILU_SMEM) && E6_SILU_SMEM
     if constexpr (E6_MODE == 3) {
       // SiLU pair straight from the staged tile: every thread produces one 8-column output chunk per pass
       // (g = chunk oc of the gate half, u = same chunk of the up half, both in sh_red row r)
@@ -1829,13 +1690,7 @@ __device__ __forceinline__ void MarlinBody(
           e6_unpack(sh_red[c_sh_stride * r + thread_n_blocks + oc], u);
   #pragma unroll
           for (int e = 0; e < 8; e++) {
-  #if defined(E6_SILU) && E6_SILU == 1
             y[e] = __fdividef(g[e], 1.f + __expf(-g[e])) * u[e];
-  #elif defined(E6_SILU) && E6_SILU == 3
-            y[e] = g[e] * __frcp_rn(1.f + expf(-g[e])) * u[e];
-  #else
-            y[e] = (g[e] / (1.f + expf(-g[e]))) * u[e];
-  #endif
           }
           C[r * (prob_n / 16) + slice_col * thread_n_blocks + oc] = e6_pack(y);
         }
@@ -1843,7 +1698,6 @@ __device__ __forceinline__ void MarlinBody(
       __syncthreads();
       return;
     }
-#endif
   #pragma unroll
     for (int i = 0;
          i < div_ceil(16 * thread_m_blocks, threads / (2 * thread_n_blocks));
@@ -1894,7 +1748,7 @@ __device__ __forceinline__ void MarlinBody(
     fetch_zp_to_registers(0, 0);
     a_gl_rd += a_gl_rd_delta_o * (stages - 1);
   };
-  // E6 consumer: per-row rstd from the producer's per-tile partials. Loads issued before the pipeline
+  // fused-epilogue consumer: per-row rstd from the producer's per-tile partials. Loads issued before the pipeline
   // fill, summed after it; sh_r is read in write_result (>= 1 __syncthreads of the main loop in between).
   constexpr int E6_TPR = threads / 16;  // threads per row
   constexpr int E6_MAXP = 10;           // partials per thread (T_in <= E6_TPR * E6_MAXP)
@@ -1903,11 +1757,7 @@ __device__ __forceinline__ void MarlinBody(
   #pragma unroll
     for (int q = 0; q < E6_MAXP; q++) {
       const int t = sub + q * E6_TPR;
-#if defined(E6_ABL) && E6_ABL == 1
-      pv[q] = (row < prob_m && t < epi.T_in) ? 1.f : 0.f;  // ablation: no partial loads
-#else
       pv[q] = (row < prob_m && t < epi.T_in) ? epi.Pin[row * epi.T_in + t] : 0.f;
-#endif
     }
   };
   auto e6_rstd_finish = [&](const float* pv) {
@@ -1923,12 +1773,7 @@ __device__ __forceinline__ void MarlinBody(
       if (epi.Rout != nullptr && blockIdx.x == 0 && row < prob_m) epi.Rout[row] = rr;
     }
   };
-  if constexpr (E6_MODE >= 2 && E6_RSTD_AT == 1) {
-    float pv[E6_MAXP];
-    e6_rstd_load(pv);
-    e6_rstd_finish(pv);
-  }
-  if constexpr (E6_MODE >= 2 && E6_RSTD_AT == 0) {
+  if constexpr (E6_MODE >= 2) {
     float pv[E6_MAXP];
     e6_rstd_load(pv);
     if (slice_iters) {
@@ -2137,18 +1982,8 @@ __device__ __forceinline__ void MarlinBody(
       if constexpr (E6_MODE == 1) {
         if (last) e6_prefetch();
       }
-#if defined(MP_ABL) && MP_ABL == 3
-      if (false) {  // ablation (numerically wrong): no split-K reduction
-#else
       if (slice_count > 1 && !use_atomic_add) {
-#endif
         // only globally reduce if there is more than one block in a slice
-#if defined(MP_OVLCHAIN) && MP_OVLCHAIN
-        if (use_fp32_reduce && slice_count <= MP_OVL_MAXS &&
-            (slice_count - 1) * (thread_m_blocks * 16 * thread_n_blocks * 16 * 4 / 16) <= sh_size_b_red_max) {
-          ovl_reduce_fp32(last);
-        } else
-#endif
         {
         barrier_acquire(&locks[locks_off], slice_idx);
         if (use_fp32_reduce) {
@@ -2240,32 +2075,6 @@ __global__ void Marlin(MARLIN_KERNEL_PARAMS) {
                                prob_n, prob_k, lda, locks, has_bias,
                                use_atomic_add, use_fp32_reduce, max_shared_mem,
                                A_src, lda_src, grid_bar, a_gscale_ptr, epi);
-}
-
-// P1 stage 2: a chain of dependent GEMMs in one persistent launch. Job j+1's A
-// may be job j's C; a grid barrier separates the jobs, and the launch /
-// pipeline fill / drain between the GEMMs is gone. All jobs share one tile
-// config (template) and the same M.
-MP_TEMPLATE_HEAD
-__global__ void MarlinChain(MpJobs jobs, int njobs, int4* __restrict__ C_tmp,
-                            int* locks, int* bar, bool use_fp32_reduce,
-                            int max_shared_mem) {
-  for (int j = 0; j < njobs; j++) {
-    const MpJob& jb = jobs.j[j];
-    if (jb.type == 0) {
-      MarlinBody<MP_TEMPLATE_ARGS>(
-          jb.A, jb.B, jb.C, C_tmp, nullptr, jb.a_s, jb.s, nullptr, nullptr,
-          jb.m, jb.n, jb.k, jb.lda, locks, false, false, use_fp32_reduce,
-          max_shared_mem, nullptr, 0, nullptr, nullptr, MpEpi{});
-    } else if (jb.type == 1) {
-      mp_norm_phase<threads>(jb.A, jb.lda, jb.B, jb.C, jb.aux,
-                             reinterpret_cast<const __nv_bfloat16*>(jb.w), jb.m,
-                             jb.k, jb.eps);
-    } else if (jb.type == 2) {
-      mp_silu_phase<threads>(jb.A, jb.lda, jb.C, jb.m, jb.n);
-    }
-    if (j + 1 < njobs) mp_grid_barrier(bar);
-  }
 }
 
 }  // namespace MARLIN_NAMESPACE_NAME

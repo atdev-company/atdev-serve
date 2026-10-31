@@ -1,47 +1,37 @@
-"""Fast GDN attention metadata for pure spec-decode batches (ATDEV_OPT=gdn_meta_fast), P7-d.
+"""Fast GDN attention metadata for pure spec-decode batches (ATDEV_OPT=gdn_meta_fast).
 
-Profile (results/prof-p7e, torch profiler with stacks, c=1 tree decode): the e2 phase between the drafter
-graph and the next target graph (376 us wall, 60 eager GPU ops) is dominated by the stock GDN metadata
-builder. Qwen3.8's 48 GDN layers sit in 10 KV-cache groups; group 0 runs ``build()`` (12 GPU ops: a 1-byte
-HtoD of the spec mask, an unused ``query_lens`` sub, an ``arange``, two CPU-mask gathers = 8-byte HtoD +
-index kernel each, five staging copies into the FULL-graph buffers) and the other 9 run
-``update_block_table()`` (CPU-mask gather + staging copy = 3 ops each, ``gdn_attn.py:595``): 39 of the 60
-ops, >100 us busy plus the launch gaps between them.
+At c=1 the phase between the drafter graph and the next target graph (~60 eager GPU ops) is dominated
+by the stock GDN metadata builder. Qwen3.8's 48 GDN layers sit in 10 KV-cache groups; group 0 runs
+``build()`` (12 GPU ops: a 1-byte HtoD of the spec mask, an unused ``query_lens`` sub, an ``arange``,
+two CPU-mask gathers = 8-byte HtoD + index kernel each, five staging copies into the FULL-graph buffers)
+and the other 9 run ``update_block_table()`` (CPU-mask gather + staging copy = 3 ops each): 39 of the
+60 ops, >100 us busy plus the launch gaps between them.
 
 When every row of the (padded) batch is a spec-decode row (every c=1 verify step), all of that metadata is
 a fixed function of (n rows, k+1, the gathered block tables, query_start_loc, num_accepted_tokens):
 
-  level 1  ``update_block_table``: the CPU-mask gather ``blk_table[masks, :k+1]`` is the contiguous slice
-           ``blk_table[:n, :k+1]`` (a view) -> only the staging copy remains (-18 ops/step).
-  level 2  (opt-in) group 0's ``build()`` launches ONE Triton kernel that writes every group's staged
-           state indices straight from the runner's gathered block tables (fixed ``input_block_tables``
-           buffers, stashed from ``GPUModelRunner.prepare_attn``) plus the four batch-level staging buffers
-           (spec mask, token index arange, query_start_loc, num_accepted); ``update_block_table`` then
-           costs zero GPU ops (-~30 ops/step). The GDN builders are discovered during the first two steps
-           (stock path), so the fused path starts at step 3.
+  * group 0's ``build()`` launches ONE Triton kernel that writes every group's staged state indices
+    straight from the runner's gathered block tables (fixed ``input_block_tables`` buffers) plus the four
+    batch-level staging buffers (spec mask, token index arange, query_start_loc, num_accepted);
+    ``update_block_table`` then costs zero GPU ops. The GDN builders are discovered during the first two
+    steps (stock path), so the fused path starts at step 3.
+  * otherwise, when the batch is still all spec rows, ``update_block_table``'s CPU-mask gather
+    ``blk_table[masks, :k+1]`` is the contiguous slice ``blk_table[:n, :k+1]`` (a view): only the staging
+    copy remains.
+
+The block tables are stashed from ``build_attn_metadata(block_tables=...)`` on every call (real, dummy and
+capture builds); the fused path checks that each group's block table is the tabled buffer (pointer,
+stride, rows >= bs, cols >= k+1) and ``update_block_table`` re-checks the group's pointer before trusting
+the fused staging.
 
 Metadata only: the kernels read the same staged tensors with the same values, outputs are bit-identical.
 Everything else (prefill in batch, mixed decode rows, mamba_cache_mode=align, eager/non-FULL paths, capture)
 takes the stock methods.
-
-Env: ATDEV_GDN_META_LEVEL (1|2, default 1 until level 2 is verified e2e); ATDEV_GDN_META_VERIFY=N: every N fused builds, compare each staged
-tensor with its torch-computed expectation (logs; for tests).
-
-P7-meta-L2 "bug for n >= 7" (LEDGER): the recorded mismatches (results/verify-meta2) were all builds made during the
-FULL-graph re-capture (n = 32 .. 2, descending), and the bug was in the VERIFY readback, not in the kernel: the block
-tables were stashed only from ``GPUModelRunner.prepare_attn``, which dummy / capture runs do not call (they use
-``get_dummy_block_tables``), so the expectation sliced the previous real step's [:1] views (``bt[:n]`` -> 1 row != n
-rows). The kernel itself reads the same persistent ``input_block_tables`` buffers through their base pointers. Fixed:
-the tables are stashed from ``build_attn_metadata(block_tables=...)`` on every call (real, dummy and capture), the
-fused path checks that each group's block table is the tabled buffer (pointer, stride, rows >= bs, cols >= k+1) and
-``update_block_table`` re-checks the group's pointer before trusting the fused staging (else level-1 copy).
-tests/test_gdn_meta_fast.py compares level 2 against the stock builder for n = 1..32 (real and capture builds).
 """
 from __future__ import annotations
 
 import functools
 import logging
-import os
 from dataclasses import replace
 
 import torch
@@ -53,8 +43,6 @@ log = logging.getLogger("atdev_serve")
 
 class _State:
     def __init__(self) -> None:
-        self.level = int(os.environ.get("ATDEV_GDN_META_LEVEL", "1"))
-        self.verify_every = int(os.environ.get("ATDEV_GDN_META_VERIFY", "0"))
         self.block_tables: tuple | None = None  # runner's gathered per-group block tables (fixed buffers)
         self.builders: dict[int, object] = {}  # kv-cache group id -> GDN builder (discovered)
         self.seen_step: dict[int, object] = {}
@@ -71,7 +59,7 @@ _NULL = None  # NULL_BLOCK_ID, bound at register
 
 
 # ---------------------------------------------------------------------------
-# fused staging kernel (level 2)
+# fused staging kernel
 # ---------------------------------------------------------------------------
 
 
@@ -179,39 +167,6 @@ def _all_spec(self, m, num_accepted_tokens, num_decode_draft_tokens_cpu):
 
 
 # ---------------------------------------------------------------------------
-# verification (ATDEV_GDN_META_VERIFY)
-# ---------------------------------------------------------------------------
-
-
-def _verify(self, m, n, bs, S_tok, qsl, acc_in):
-    torch.cuda.synchronize()
-    k1 = self.num_spec + 1
-    bad = []
-    for g, b in S.builders.items():
-        bt = S.block_tables[g]
-        exp = bt[:n, :k1]
-        got = b.spec_state_indices_tensor[:n]
-        if exp.shape != got.shape:
-            bad.append(f"state_idx g{g} block table rows {bt.shape[0]} < n")
-        elif not torch.equal(exp, got):
-            bad.append(f"state_idx g{g}")
-        if bs > n and not bool((b.spec_state_indices_tensor[n:bs] == _NULL).all()):
-            bad.append(f"state_idx pad g{g}")
-    if not torch.equal(self.spec_sequence_masks[:bs], torch.arange(bs, device=qsl.device) < n):
-        bad.append("masks")
-    if not torch.equal(self.spec_token_indx[:S_tok], torch.arange(S_tok, dtype=torch.int32, device=qsl.device)):
-        bad.append("token_indx")
-    exp_q = torch.cat([qsl[: n + 1], qsl[n: n + 1].expand(bs - n)])
-    if not torch.equal(self.spec_query_start_loc[: bs + 1], exp_q):
-        bad.append("query_start_loc")
-    exp_a = torch.cat([acc_in[:n], torch.ones(bs - n, dtype=acc_in.dtype, device=acc_in.device)])
-    if not torch.equal(self.num_accepted_tokens[:bs], exp_a):
-        bad.append("num_accepted")
-    log.warning("atdev %s: VERIFY build %d (n=%d bs=%d S=%d, %d groups): %s", OPT_NAME, S.n_build, n, bs,
-                S_tok, len(S.builders), "all staged tensors match" if not bad else "MISMATCH " + ",".join(bad))
-
-
-# ---------------------------------------------------------------------------
 # register
 # ---------------------------------------------------------------------------
 
@@ -229,8 +184,7 @@ def register() -> None:
     if getattr(cls.update_block_table, "_atdev_meta_fast", False):
         return
     _NULL = ga.NULL_BLOCK_ID
-    if S.level >= 2:
-        _KERNEL = _make_kernel()
+    _KERNEL = _make_kernel()
     orig_ubt = cls.update_block_table
     orig_build = cls.build
 
@@ -254,7 +208,7 @@ def register() -> None:
     @functools.wraps(orig_bam)
     def build_attn_metadata(*a, **kw):
         # the block tables of THIS call (real steps, dummy runs and FULL-graph capture alike; the
-        # prepare_attn stash alone misses dummy / capture builds -> P7-meta-L2 verify artefact)
+        # prepare_attn stash alone misses dummy / capture builds)
         bts = kw.get("block_tables")
         if bts is not None:
             S.block_tables = tuple(bts)
@@ -279,7 +233,7 @@ def register() -> None:
         g = _group_of(m.block_table_tensor)
         if g is not None:
             S.seen_step[g] = self
-        spec = _all_spec(self, m, num_accepted_tokens, num_decode_draft_tokens_cpu) if S.level >= 2 else None
+        spec = _all_spec(self, m, num_accepted_tokens, num_decode_draft_tokens_cpu)
         if spec is None or g is None or not S.ready or S.tabs is None or g not in S.builders:
             # stock path; discovery of the GDN builders happens in update_block_table / here
             S.n_stock += 1
@@ -317,8 +271,6 @@ def register() -> None:
             S.logged.add("fused")
             log.warning("atdev %s: fused all-spec metadata ENGAGED (n=%d, bs=%d, k+1=%d, %d GDN groups)",
                         OPT_NAME, n, bs, k1, G)
-        if S.verify_every and S.n_build % S.verify_every == 0:
-            _verify(self, m, n, bs, S_tok, qsl, num_accepted_tokens)
         md = ga.GDNAttentionMetadata(
             num_prefills=0, num_prefill_tokens=0, num_decodes=0, num_decode_tokens=0,
             num_spec_decodes=n, num_spec_decode_tokens=total, num_actual_tokens=m.num_actual_tokens,
@@ -347,7 +299,7 @@ def register() -> None:
         g = _group_of(blk_table)
         if g is not None:
             S.seen_step[g] = self
-        if (S.level >= 2 and S.staged_step == id(m) and m.spec_state_indices_tensor is not None
+        if (S.staged_step == id(m) and m.spec_state_indices_tensor is not None
                 and S.tabs is not None and g is not None
                 and S.tabs["bt_ptr_of"].get(g) == blk_table.data_ptr()):
             # the fused kernel already wrote this group's staged state indices: zero GPU ops
@@ -362,7 +314,7 @@ def register() -> None:
                 or not self._stage_spec_decode(m.num_prefills, m.num_decodes, m.num_spec_decodes,
                                                m.num_spec_decode_tokens)):
             return orig_ubt(self, metadata, blk_table, slot_mapping)
-        # level 1: all rows are spec rows -> the CPU-mask gather is the contiguous slice (no HtoD/index)
+        # all rows are spec rows -> the CPU-mask gather is the contiguous slice (no HtoD/index)
         n = m.num_spec_decodes
         bs = m.spec_state_indices_tensor.shape[0]
         stage = self.spec_state_indices_tensor
@@ -379,4 +331,4 @@ def register() -> None:
 
     update_block_table._atdev_meta_fast = True
     cls.update_block_table = update_block_table
-    log.info("atdev %s: registered (level %d)", OPT_NAME, S.level)
+    log.info("atdev %s: registered", OPT_NAME)

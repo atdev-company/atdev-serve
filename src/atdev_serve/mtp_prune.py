@@ -6,8 +6,8 @@ written to the MTP attention cache. Only the last accepted row of each request i
 (`last_hidden_states[last_token_indices]` -> draft logits and the hidden state of the next pass),
 so after attention everything is row-wasted work: o_proj, post-attention norm, gate_up, down and
 the final norm run on 96 rows instead of 32 (stock W4A16 Marlin also splits M=96 into a 64-row
-and a 32-row launch, each streaming the full weight). LEDGER C32-xp: o 66 -> 24, gate_up 210 ->
-82, down 145 -> 53 us per step.
+and a 32-row launch, each streaming the full weight). Measured: o 66 -> 24, gate_up 210 -> 82,
+down 145 -> 53 us per step.
 
 This module, for the first pass only:
 * `_prefill` (patched) publishes `last_token_indices[:num_reqs]` (a persistent buffer, so the
@@ -26,7 +26,6 @@ MTP layers, layer_scale, sequence-parallel MoE) fall back to stock.
 from __future__ import annotations
 
 import logging
-import os
 
 import torch
 import triton
@@ -105,16 +104,13 @@ def _silu_mul_kernel(x_ptr, sx, o_ptr, so, N, BLOCK: tl.constexpr):
     tl.store(o_ptr + row * so + c, (g * tl.sigmoid(g) * u).to(tl.bfloat16), mask=m)
 
 
-_TRITON = os.environ.get("ATDEV_MTP_PRUNE_TRITON", "1") == "1"
-
-
 def _ok2(*ts) -> bool:
     return all(t.dim() == 2 and t.stride(-1) == 1 and t.dtype == torch.bfloat16 for t in ts)
 
 
 def pre_fc(e, h, ne, nh):
     """cat([ne(e), nh(h)], -1)"""
-    if not (_TRITON and _ok2(e, h)):
+    if not _ok2(e, h):
         return torch.cat([ne(e), nh(h)], dim=-1)
     m, H = e.shape
     out = torch.empty((m, 2 * H), dtype=e.dtype, device=e.device)
@@ -126,7 +122,7 @@ def pre_fc(e, h, ne, nh):
 
 def norm(mod, x, residual=None, rows=None):
     """mod(x) / mod(x, residual[rows]) -> y or (y, new residual)"""
-    if not (_TRITON and _ok2(x) and (residual is None or _ok2(residual))):
+    if not (_ok2(x) and (residual is None or _ok2(residual))):
         if residual is None:
             return mod(x)
         return mod(x, residual if rows is None else residual.index_select(0, rows))
@@ -147,7 +143,7 @@ def gate_gather(o, gate, rows):
     """o[rows] * sigmoid(gate[rows]) (gate None -> o[rows])"""
     if gate is None:
         return o.index_select(0, rows)
-    if not (_TRITON and _ok2(o, gate) and o.shape == gate.shape):
+    if not (_ok2(o, gate) and o.shape == gate.shape):
         return o.index_select(0, rows) * torch.sigmoid(gate.index_select(0, rows))
     n = o.shape[1]
     out = torch.empty((rows.shape[0], n), dtype=o.dtype, device=o.device)
@@ -159,7 +155,7 @@ def gate_gather(o, gate, rows):
 
 
 def silu_mul(mlp, gu):
-    if not (_TRITON and _ok2(gu)):
+    if not _ok2(gu):
         return mlp.act_fn(gu)
     m, n2 = gu.shape
     n = n2 // 2

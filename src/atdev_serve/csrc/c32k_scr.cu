@@ -1,4 +1,4 @@
-// C32k: CUDA replacement of draft_vocab._screen_chunk_kernel (Triton), bit-identical outputs.
+// CUDA replacement of draft_vocab._screen_chunk_kernel (Triton), bit-identical outputs.
 // Triton semantics per program (row r, chunk c), S rounds over v = float(x[r, c*CH + j]) (masked: -inf, NaN -> -inf):
 //   mx = max(v) ; i = min{offs : v == mx & ok} (none -> c*CH) ; store (mx, i) ; v[offs == i] = -inf
 // Equivalent closed form used here:
@@ -7,7 +7,7 @@
 //   * once no such element remains: mx = -inf and i = c*CH (all ok elements are -inf then and ok is a prefix,
 //     so the lowest ok index is c*CH; an all-masked chunk also gives c*CH);
 //   * the stored mx of a zero pick is the max of the remaining zeros under max.f32 (+0 > -0): +0 while any
-//     unpicked +0 remains, else -0 (the test checks this against the Triton kernel).
+//     unpicked +0 remains, else -0 (as the Triton kernel).
 // One CTA per (row, chunk), NT threads, CH / NT elements per thread loaded as 16-byte vectors.
 // Key (32 bit) = ordered bf16 bits (-0 canonicalised to +0) << 16 | (0xffff - chunk-local index); key 0 = empty.
 #include <torch/extension.h>

@@ -1,8 +1,8 @@
-// ATDEV_C1_BA_STREAM side-stream in_proj_ba accumulator without shared memory (c1_norm.ba_tot_cuda).
+// Side-stream in_proj_ba accumulator without shared memory (c1_fuse / c1_norm.ba_tot).
 //
 // tot[m, n] = sum_{s=0..7} ( mma.m16n8k16 chain over the 40 k16 steps of K-split s, from 0 ) -- the accumulation
 // of c1_norm._ba_gemv_r_kernel (Triton tl.dot, BK 128, SPLIT 8: one sequential mma chain per output element and
-// split, then tot = 0 + p0 + p1 + ... + p7 in fp32), stored unscaled (rstd is applied by ba_scale / GT_BAP).
+// split, then tot = 0 + p0 + p1 + ... + p7 in fp32), stored unscaled (rstd is applied by ba_scale or the GDN tree kernel).
 // Grid (N / 8 n8-tiles, 8 splits) of ONE warp per CTA, no shared memory, ~60 registers: unlike the Triton kernel
 // (smem-staged tl.dot) these CTAs fit next to the qkvz Marlin consumer's 2 CTAs / SM (whose dynamic smem fills
 // the SM), so the side stream really runs concurrently instead of delaying Marlin CTAs. Rows >= M read as 0.

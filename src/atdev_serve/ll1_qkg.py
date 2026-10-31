@@ -1,7 +1,7 @@
-"""LL1-qkg kernel: vLLM 0.31.0 fused_qk_norm_rope._fused_qk_rmsnorm_rope_gate_kernel copied verbatim, with only the
+"""qkg kernel: vLLM 0.31.0 fused_qk_norm_rope._fused_qk_rmsnorm_rope_gate_kernel copied verbatim, with only the
 position / cos / sin loads moved to the top (they do not depend on the RMSNorm, so the dependent global round trip
-overlaps the norm's loads + reduction). Arithmetic unchanged -> bit-identical (tests/test_ll1_fuse.py qkg).
-Generated from the vLLM source by the LL1 tooling; do not hand-edit."""
+overlaps the norm's loads + reduction). Arithmetic unchanged -> bit-identical.
+Generated from the vLLM source; do not hand-edit."""
 import torch
 
 from vllm.triton_utils import tl, triton
@@ -55,7 +55,7 @@ def _qkg_kernel(
         w_ptr = q_weight_ptr
         out_base = q_out_ptr + token * q_out_stride_t + local_head * head_dim
 
-    # LL1-qkg: position / cos / sin loads issued first (independent of the norm; same values and arithmetic)
+    # position / cos / sin loads issued first (independent of the norm; same values and arithmetic)
     rot_offs = tl.arange(0, ROT_HALF_BLOCK)
     rot_mask = rot_offs < half_rotary
     # Always use int64 for positions to avoid overflow in address computation.
@@ -93,7 +93,7 @@ def _qkg_kernel(
         tl.load(w_ptr + half_rotary + rot_offs, mask=rot_mask, other=0.0).to(tl.float32)
         + norm_beta
     )
-    # --- Gate copy (q heads only, verbatim; LL1-qkg: issued first) ---
+    # --- Gate copy (q heads only, verbatim; issued first) ---
     if not is_k:
         g_offs = tl.arange(0, HEAD_BLOCK)
         gate_in_base = in_base + head_dim
@@ -130,7 +130,7 @@ def _qkg_kernel(
     tl.store(out_base + rot_offs, o1, mask=rot_mask)
     tl.store(out_base + half_rotary + rot_offs, o2, mask=rot_mask)
 
-    # --- Gate copy: moved to the top (LL1-qkg) ---
+    # --- Gate copy: moved to the top ---
 
 
 def fused_qk_rmsnorm_rope_gate_ll1(

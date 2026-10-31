@@ -17,9 +17,6 @@ dependencies = [
   "ninja",
 ]
 
-[project.optional-dependencies]
-bench = ["aiohttp"]
-
 [project.entry-points."vllm.general_plugins"]
 atdev = "atdev_serve.register:register_all"
 

@@ -5,7 +5,6 @@
 #   --venv DIR        virtualenv location (default: ./.venv)
 #   --python BIN      Python 3.12 interpreter (default: python3.12; uv-managed Python if missing and uv exists)
 #   --editable        pip install -e . (default: regular install of this checkout)
-#   --no-bench        skip the benchmark extra (aiohttp)
 #   --cuda-home DIR   CUDA 13.0 toolkit with bin/nvcc (default: $CUDA_HOME, else /usr/local/cuda-13.0, /usr/local/cuda)
 #   --pip-nvcc        EXPERIMENTAL: no system toolkit -> use NVIDIA's CUDA 13.0 nvcc wheels inside the venv
 #                     (pinned nvidia-cuda-nvcc / -crt / nvvm 13.0.*; a JIT build + link was tested, a full
@@ -23,7 +22,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VENV=$HERE/.venv
 PY_BIN=${PYTHON:-python3.12}
-EDITABLE=0; BENCH=1; DRY=0; CUDA_EXPLICIT=0; SKIP_GPU=0; PIP_NVCC=0; WARMUP=""
+EDITABLE=0; DRY=0; CUDA_EXPLICIT=0; SKIP_GPU=0; PIP_NVCC=0; WARMUP=""
 CUDA_DIR=${CUDA_HOME:-}
 VLLM_VERSION=0.31.0
 MIN_DISK_GB=80
@@ -33,13 +32,12 @@ while [ $# -gt 0 ]; do
     --venv) VENV=$(realpath -m "$2"); shift 2 ;;
     --python) PY_BIN=$2; shift 2 ;;
     --editable) EDITABLE=1; shift ;;
-    --no-bench) BENCH=0; shift ;;
     --cuda-home) CUDA_DIR=$2; CUDA_EXPLICIT=1; shift 2 ;;
     --pip-nvcc) PIP_NVCC=1; shift ;;
     --skip-gpu-check) SKIP_GPU=1; shift ;;
     --warmup) WARMUP=$2; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -152,7 +150,7 @@ VPY=$VENV/bin/python
 if [ $USE_UV = 1 ]; then PIP=(uv pip install --python "$VPY"); else PIP=("$VPY" -m pip install); fi
 [ $USE_UV = 1 ] || run "$VPY" -m pip install --upgrade pip
 run "${PIP[@]}" "vllm==$VLLM_VERSION" || { echo "vllm install failed"; exit 4; }
-TARGET="$HERE"; [ $BENCH = 1 ] && TARGET="${HERE}[bench]"
+TARGET="$HERE"
 if [ $EDITABLE = 1 ]; then run "${PIP[@]}" -e "$TARGET" || exit 4
 else run "${PIP[@]}" "$TARGET" || exit 4; fi
 if [ -z "$CUDA_FOUND" ] && [ $PIP_NVCC = 1 ]; then

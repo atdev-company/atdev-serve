@@ -109,12 +109,12 @@ Because these change numerics, outputs are not token-identical to stock vLLM. Th
 With 32 requests in flight a step already has plenty of rows. The goal changes: verify only the
 drafts that are likely to be accepted, and make the large GEMMs cheaper.
 
-### DI1: confidence-scheduled variable-length verification
+### Confidence-scheduled variable-length verification (`di1_varlen`)
 
 ```mermaid
 sequenceDiagram
     participant M as MTP head (int4, 64k draft vocab)
-    participant S as DI1 scheduler
+    participant S as Confidence scheduler
     participant T as Target verify (graph)
     M->>S: up to 3 drafts per request + confidence q per draft
     S->>S: rank all (request, depth) by cumulative confidence
@@ -139,7 +139,7 @@ sequenceDiagram
 * The activation quantizers are fused into the producers: the RMSNorm, SiLU-mul and gate kernels
   write the 4-bit activations and their scales directly (`fused_quant`, `gdn_a4_fold`, `c32c_csum`).
 * Split-K with a parallel reduction, and a branch-free correctly rounded quotient in the quantizers
-  (`ATDEV_C32_MK`). `c32k_fuse` fuses the screen's top-k glue.
+  (built into the W4A4 kernels). `c32k_fuse` fuses the screen's top-k glue.
 * MarlinA4 is still about 54% of the c=32 step.
 
 ### GDN, attention and heads
@@ -159,7 +159,7 @@ sequenceDiagram
 
 ## Feature flags
 
-Each launch script lists every setting. Features are switched on with `ATDEV_OPT`:
+Features are switched on with `ATDEV_OPT`; each launch script also sets the few kernel options that differ between the two stacks:
 
 | stack | `ATDEV_OPT` |
 |---|---|
@@ -179,7 +179,7 @@ These ideas were tried and measured, and none of them shipped:
 * Overlap tricks at c=1 (PDL emulation, L2 prefetch, two-stream GEMMs): one M=16 GEMM already uses
   all SMs, so there was at most about 2 us of overlap per GEMM boundary.
 * A custom M<=16 W4A16 GEMM written from scratch: capped at Marlin's ~1.4 TB/s by the tile layout.
-* Fixed MTP k=3 at c=32 (every draft verified): +15.9% tokens per step for +20% step time. DI1
+* Fixed MTP k=3 at c=32 (every draft verified): +15.9% tokens per step for +20% step time. The confidence scheduler
   keeps the k=2 row budget instead.
 * FlashInfer tree attention at c=1: faster kernels, but the planning cost is paid on the host every
   step.

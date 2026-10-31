@@ -1,17 +1,17 @@
-"""C32b: standalone CUDA GDN causal_conv1d_update for the c=32 MTP verify path (ATDEV_OPT=...,c32_conv).
+"""Standalone CUDA GDN causal_conv1d_update for the c=32 MTP verify path (ATDEV_OPT=c32_conv).
 
-csrc/c32_conv.cu (C32a-conv (c), 2 channels / thread, grid dim/256 x requests) reproduces vLLM's Triton
+csrc/c32_conv.cu (2 channels / thread, grid dim/256 x requests) reproduces vLLM's Triton
 ``_causal_conv1d_update_kernel`` op sequence for width 4 + SiLU + no bias + spec decoding (varlen
 query_start_loc, num_accepted_tokens, null block): bf16 products via fma.rn.bf16(x, w, -0), fp32 adds in
 tap order from 0, SiLU = acc / (1 + ex2.approx(-acc * log2e)) with div.full, the same state-window roll.
-Bit-identical (tests/test_c32_conv.py: out + conv state vs the Triton kernel); -1.2..-1.4 us / layer.
+Bit-identical (out + conv state vs the Triton kernel).
 
 The hook replaces the module-level ``causal_conv1d_update`` name in qwen_gdn_linear_attn; every call
 that is not exactly the supported form (bias, other activation / width / dtype, no query_start_loc,
 state_len != width - 1 + max_query_len - 1, unaligned views, out=...) goes to the stock function.
 
-ATDEV_C32_QKG=1 additionally installs the LL1-qkg kernel (ll1_qkg.py: vLLM's fused q/k RMSNorm + RoPE + gate
-kernel with the norm-independent loads hoisted; arithmetic unchanged) for the target / MTP attention layers.
+It also installs the ll1_qkg kernel (vLLM's fused q/k RMSNorm + RoPE + gate kernel with the
+norm-independent loads hoisted; arithmetic unchanged) for the target / MTP attention layers.
 """
 from __future__ import annotations
 
@@ -95,11 +95,11 @@ def register() -> None:
     if vllm.__version__ != SUPPORTED_VLLM_VERSION:
         raise RuntimeError(f"atdev {OPT_NAME}: written for vLLM {SUPPORTED_VLLM_VERSION}")
     install()
-    if os.environ.get("ATDEV_C32_QKG", "0") == "1":  # C32b: LL1-qkg (bit-identical load hoisting) at c=32 too
-        from vllm.model_executor.models import qwen3_next as q3n
-        from atdev_serve import compile_cache, ll1_qkg
-        q3n.fused_qk_rmsnorm_rope_gate = ll1_qkg.fused_qk_rmsnorm_rope_gate_ll1
-        compile_cache._SALTS["c32_qkg"] = "1"  # traced attention forward launches a different Triton kernel
-        log.warning("atdev %s: ATDEV_C32_QKG=1 (qwen3_next fused q/k norm + rope + gate -> ll1_qkg)", OPT_NAME)
+    # bit-identical load hoisting in the fused q/k norm + rope + gate kernel
+    from vllm.model_executor.models import qwen3_next as q3n
+    from atdev_serve import compile_cache, ll1_qkg
+    q3n.fused_qk_rmsnorm_rope_gate = ll1_qkg.fused_qk_rmsnorm_rope_gate_ll1
+    compile_cache._SALTS["c32_qkg"] = "1"  # traced attention forward launches a different Triton kernel
+    log.warning("atdev %s: qwen3_next fused q/k norm + rope + gate -> ll1_qkg", OPT_NAME)
     log.warning("atdev %s: qwen_gdn_linear_attn.causal_conv1d_update -> csrc/c32_conv.cu for the spec-decode "
                 "form (bit-identical), stock otherwise", OPT_NAME)

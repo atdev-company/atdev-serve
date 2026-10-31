@@ -1,8 +1,8 @@
-"""verify_split_head FAST path for the MTP / chain greedy rejection sampler at c=32
-(ATDEV_OPT=...,verify_split_head,vsplit_mtp + ATDEV_VSPLIT_FAST=1). Output bit-identical.
+"""Argmax-only greedy verify for the MTP rejection sampler at c=32
+(ATDEV_OPT=...,verify_split_head,vsplit_mtp). Output bit-identical to the split head's logits path.
 
-At c=32, MTP k=2 every decode step verifies 96 rows (32 req x 3). The stock chain after
-the transformer (LEDGER C32-prof, eager, 1.58 ms) is
+At c=32 every decode step verifies about 96 rows (32 requests x 3). The stock chain after the
+transformer (eager, 1.58 ms) is
 
   F = bf16 cuBLAS head part (65536 rows)             0.47 ms
   tail = int4 Marlin W4A8 (182784 rows) at M=96      0.76 ms  (stock Marlin = 2 launches,
@@ -12,27 +12,18 @@ the transformer (LEDGER C32-prof, eager, 1.58 ms) is
   RejectionSampler: gather_draft + local stats (96 x 31 blocks) + rejection + resample
   (32 x 243 blocks) + insert                         ~0.12 ms
 
-This module (each piece default off, all bit-identical to the above):
+This module:
 
-* ATDEV_VSPLIT_MTP_ARGMAX=1 (default 1 when the opt is on): on all-greedy spec-decode
-  sample() calls (no logprobs / grammar / logits processing / penalties / draft logits /
-  watermark / NaN counting / batch sharding), _apply_head returns an unused placeholder
-  and computes the per-row argmax with verify_split_head.split_argmax over the two GEMM
-  outputs (torch.argmax semantics = leftmost max of the same bf16 values); the patched
+* on all-greedy spec-decode sample() calls (no logprobs / grammar / logits processing / penalties /
+  draft logits / watermark / NaN counting / batch sharding), _apply_head returns an unused
+  placeholder and computes the per-row argmax (vsplit_a4scr screen for M <= 96, else
+  verify_split_head.split_argmax over the two GEMM outputs = torch.argmax semantics); the patched
   RejectionSampler.__call__ then runs one accept kernel (stock greedy rule incl. the -1
-  prefill-placeholder drafts) and the stock get_num_sampled_and_rejected. Same tokens and
-  counts as stock whenever the logits contain no NaN (stock maps NaN block maxima to -inf).
-* ATDEV_VSPLIT_TAIL_MP=64,256,256,6,1,4: the A8 tail GEMM (M >= ATDEV_VSPLIT_TAIL_MIN,
-  default 17) on marlin_plus with the stock tile (thread_k 64, thread_n 256, 256 threads,
-  same 108-CTA grid -> same split-K stripes) and a 6-stage pipeline: bit-identical, checked
-  torch.equal against the stock tail the first time each M is seen (else stock for that M).
+  prefill-placeholder drafts) and the stock get_num_sampled_and_rejected.
+* the A8 tail GEMM (M >= 17) runs on marlin_plus with the stock tile (thread_k 64, thread_n 256,
+  256 threads, same 108-CTA grid -> same split-K stripes) and a 6-stage pipeline: bit-identical,
+  checked torch.equal against the stock tail the first time each M is seen (else stock for that M).
   M=96: 759 -> 715 us. Used by both the argmax path and the stock logits path.
-* ATDEV_VSPLIT_TAIL_MS=128,128,256,6,1,6,2,0 + ATDEV_VSPLIT_TAIL_MS_EXACT=0 (ROUNDING-LEVEL,
-  not bit-identical): one-pass M-split kernel (vsplit_tail_build, tmb=6 = 96 rows, MW=2);
-  thread_n 128 changes the split-K stripes -> fp32 cross-CTA order: 52 of 17.5M tail logits
-  differ by 1 bf16 ulp at M=96 (random head). M=96: 606 us. With EXACT=1 (default) it is
-  bit-checked like TAIL_MP and therefore falls back to stock.
-* ATDEV_VSPLIT_STREAMS=1 (verify_split_head): tail on a side stream next to the bf16 part.
 
 Eager only (the sampling step is not CUDA-graphed at c=32); capture-time calls fall back.
 """
@@ -40,7 +31,6 @@ Eager only (the sampling step is not CUDA-graphed at c=32); capture-time calls f
 from __future__ import annotations
 
 import functools
-import os
 
 import numpy as np
 import torch
@@ -60,36 +50,15 @@ class _State:
     rows: int | None = None          # expected verify rows of the current eligible sample()
     fast: tuple | None = None        # (placeholder data_ptr, rows, int64 argmax [rows])
     hits: int = 0
-    batch = None                     # input_batch of the current eligible sample() (dump only)
 
 
 S = _State()
 # di1_varlen: greedy verify on adaptive-verification (varlen, device cu_num_logits) batches is the same
 # stock rule (single logits chunk), so the argmax fast path stays valid there
 ADAPTIVE_OK = False
-
-# ATDEV_VSPLIT_DUMP=<file.pt>[,N[,skip]]: save the verify hidden states + draft tokens of N eligible
-# steps (default 64, after `skip` steps, default 200) for offline real-logit tests (tests/
-# test_vsplit_f8_c32.py). Instrumentation only (host syncs); outputs unchanged.
-_DUMP = None
-if os.environ.get("ATDEV_VSPLIT_DUMP"):
-    _p = os.environ["ATDEV_VSPLIT_DUMP"].split(",")
-    _DUMP = dict(path=_p[0], n=int(_p[1]) if len(_p) > 1 else 64,
-                 skip=int(_p[2]) if len(_p) > 2 else 200, seen=0, rows=[], saved=False)
-
-
-def _dump(h, ib) -> None:
-    d = _DUMP
-    d["seen"] += 1
-    if d["saved"] or d["seen"] <= d["skip"]:
-        return
-    li = ib.logits_indices
-    d["rows"].append(dict(h=h.detach().cpu(), tok=ib.input_ids[li].detach().cpu(),
-                          cu=ib.cu_num_logits.detach().cpu()))
-    if len(d["rows"]) >= d["n"]:
-        torch.save(d["rows"], d["path"])
-        d["saved"] = True
-        logger.warning("atdev vsplit_mtp: dumped %d verify steps -> %s", len(d["rows"]), d["path"])
+# marlin_plus launch config of the A8 tail (tk, tn, threads, stages, bps, max_tmb) for M >= _TAIL_MIN
+_TAIL_MP = (64, 256, 256, 6, 1, 4)
+_TAIL_MIN = 17
 
 
 # ---------------------------------------------------------------------------------------
@@ -146,19 +115,10 @@ def greedy_accept(am, cu_num_logits, num_reqs, width, input_ids, positions, logi
 
 
 # ---------------------------------------------------------------------------------------
-# A8 tail on the M-split kernel (one weight pass for 96 rows)
+# A8 tail on marlin_plus
 # ---------------------------------------------------------------------------------------
 
-_MS = None
 _BUFS: dict = {}
-
-
-def _ms_mod():
-    global _MS
-    if _MS is None:
-        from atdev_serve import vsplit_tail_build
-        _MS = vsplit_tail_build.load()
-    return _MS
 
 
 def _bufs(dev):
@@ -178,34 +138,6 @@ def _quant(t, h):
 
     a_q, a_s = marlin_quant_input(h, torch.int8)
     return a_q, (a_s * t.gs).reshape(-1).contiguous()
-
-
-def _quant_plain(h):
-    """per_token_quant_int8(h) -> (a_q int8 [M, K], a_s fp32 [M, 1]); shared by the W8A8 F part
-    (ATDEV_VSPLIT_FA8) and the A8 tail (tail_mp_q scales a_s by the tail's gs)."""
-    from vllm.model_executor.layers.quantization.utils.marlin_utils import marlin_quant_input
-
-    return marlin_quant_input(h, torch.int8)
-
-
-def tail_mp_q(t, a_q, a_s, m: int, cfg) -> torch.Tensor:
-    """tail_mp on an already quantised activation (same values as tail_mp(t, h, cfg))."""
-    from atdev_serve import marlin_plus
-
-    out = torch.empty((m, t.size_n), dtype=torch.bfloat16, device=a_q.device)
-    b = _bufs(a_q.device)
-    return marlin_plus.mod().gemm(a_q, t.qweight, t.scales, (a_s * t.gs).reshape(-1).contiguous(),
-                                  out, b["locks"], b["c_tmp"], t.size_n, t.size_k, list(cfg),
-                                  True, False)
-
-
-def tail_ms(t, h: torch.Tensor, cfg) -> torch.Tensor:
-    """A8 tail with the GEMM on the M-split kernel (cfg = tk,tn,thr,stages,bps,tmb,MW,DEFER)."""
-    a_q, a_s = _quant(t, h)
-    out = torch.empty((h.shape[0], t.size_n), dtype=h.dtype, device=h.device)
-    b = _bufs(h.device)
-    return _ms_mod().gemm_ms(a_q, t.qweight, t.scales, a_s, out, b["locks"], b["c_tmp"],
-                             t.size_n, t.size_k, list(cfg))
 
 
 def tail_mp(t, h: torch.Tensor, cfg) -> torch.Tensor:
@@ -239,50 +171,22 @@ def check_tail(t, fn, m: int, dev) -> bool:
 
 
 def _setup_tail(sh) -> None:
-    """ATDEV_VSPLIT_TAIL_MP (bit-identical: stock tile, other pipeline depth) or
-    ATDEV_VSPLIT_TAIL_MS (+ ATDEV_VSPLIT_TAIL_MS_EXACT=0: rounding-level, not checked)."""
     if getattr(sh, "_mtp_tail_ready", False):
         return
     sh._mtp_tail_ready = True
-    sh.tail_fn, sh.tail_ok, sh.tail_exact = None, {}, True
-    sh.tail_min = int(os.environ.get("ATDEV_VSPLIT_TAIL_MIN", "17"))
-    mp_cfg = os.environ.get("ATDEV_VSPLIT_TAIL_MP", "")
-    ms_cfg = os.environ.get("ATDEV_VSPLIT_TAIL_MS", "")
-    if not (mp_cfg or ms_cfg):
-        return
-    if sh.tail.backend != "marlin" or not getattr(sh.tail, "a8", False):
-        logger.warning("atdev vsplit_mtp: tail cfg needs the A8 Marlin tail (ATDEV_VSPLIT_A8=1); "
-                       "ignored")
-        return
+    sh.tail_ok = {}
     t = sh.tail
-    # C32e: ATDEV_VSPLIT_TAIL_MS_MIN=R with both MP and MS set (and MS_EXACT=0): one-pass M-split
-    # tail for M >= R (M=96: 606 vs 714 us), marlin_plus MP below (M=64: 398 vs 597 us)
-    ms_min = int(os.environ.get("ATDEV_VSPLIT_TAIL_MS_MIN", "0"))
-    if ms_cfg and mp_cfg and ms_min > 0:
-        c = [int(x) for x in ms_cfg.split(",")]
-        c2 = [int(x) for x in mp_cfg.split(",")]
-        sh.tail_fn = lambda h: tail_ms(t, h, c) if h.shape[0] >= ms_min else tail_mp(t, h, c2)
-        sh.tail_exact = os.environ.get("ATDEV_VSPLIT_TAIL_MS_EXACT", "1") == "1"
-    elif ms_cfg:
-        c = [int(x) for x in ms_cfg.split(",")]
-        sh.tail_fn = lambda h: tail_ms(t, h, c)
-        sh.tail_exact = os.environ.get("ATDEV_VSPLIT_TAIL_MS_EXACT", "1") == "1"
-    else:
-        c = [int(x) for x in mp_cfg.split(",")]
-        sh.tail_fn = lambda h: tail_mp(t, h, c)
-    logger.warning("atdev vsplit_mtp: tail on %s cfg %s (%s)", "ms" if ms_cfg else "marlin_plus",
-                   c, "bit-checked per M" if sh.tail_exact else "ROUNDING-LEVEL, unchecked")
+    sh.tail_fn = lambda h: tail_mp(t, h, _TAIL_MP)
+    logger.warning("atdev vsplit_mtp: tail on marlin_plus cfg %s (bit-checked per M)", list(_TAIL_MP))
 
 
 def _tail(sh, h: torch.Tensor):
-    """Tuned tail logits, or None (-> stock). Exact mode: each new M is checked bit-identical
-    against the stock tail first (eager only; never during graph capture)."""
+    """Tuned tail logits, or None (-> stock). Each new M is checked bit-identical against the
+    stock tail first (eager only; never during graph capture)."""
     fn = sh.tail_fn
     m = h.shape[0]
-    if fn is None or m < sh.tail_min:
+    if m < _TAIL_MIN:
         return None
-    if not sh.tail_exact:
-        return fn(h)
     ok = sh.tail_ok.get(m)
     if ok is None:
         if torch.cuda.is_current_stream_capturing():
@@ -332,9 +236,7 @@ def _install() -> None:
 
     from atdev_serve import verify_split_head as vsh
 
-    use_argmax = os.environ.get("ATDEV_VSPLIT_MTP_ARGMAX", "1") == "1"
-
-    # 1) tail GEMM on the M-split kernel (both the stock logits path and the argmax path)
+    # 1) tail GEMM on marlin_plus (both the stock logits path and the argmax path)
     if not getattr(vsh.SplitHead, "_atdev_mtp_tail", False):
         o_logits, o_tail = vsh.SplitHead.logits, vsh.SplitHead.tail_logits
 
@@ -344,7 +246,7 @@ def _install() -> None:
             if tl_ is None:
                 return o_logits(self, h, vocab_cols)
             out = torch.empty(h.shape[0], vocab_cols, dtype=self.fw.dtype, device=h.device)
-            out.index_copy_(1, self.f_ids, self.f_logits(h))  # bf16 / FBITS=8 F part
+            out.index_copy_(1, self.f_ids, self.f_logits(h))
             out.index_copy_(1, self.t_ids, tl_)
             return out
 
@@ -356,7 +258,7 @@ def _install() -> None:
         vsh.SplitHead.logits, vsh.SplitHead.tail_logits = logits, tail_logits
         vsh.SplitHead._atdev_mtp_tail = True
 
-    if not use_argmax or getattr(GPUModelRunner.sample, "_atdev_vsplit_mtp", False):
+    if getattr(GPUModelRunner.sample, "_atdev_vsplit_mtp", False):
         return
 
     # 2) sample(): mark all-greedy spec-decode verify calls
@@ -366,13 +268,11 @@ def _install() -> None:
     def sample(self, hidden_states, input_batch, grammar_output):
         if _eligible(self, input_batch, grammar_output):
             S.rows = int(input_batch.logits_indices.shape[0])
-            S.batch = input_batch
         try:
             return o_sample(self, hidden_states, input_batch, grammar_output)
         finally:
             S.rows = None
             S.fast = None
-            S.batch = None
 
     sample._atdev_vsplit_mtp = True
     GPUModelRunner.sample = sample
@@ -391,12 +291,10 @@ def _install() -> None:
         sh._fast_init()
         if not sh.fast_ok or hidden_states.dtype != sh.fw.dtype:
             return o_head(self, lm_head, hidden_states, embedding_bias)
-        scr = getattr(sh, "a4scr", None)  # C32e ATDEV_VSPLIT_A4SCR: None for M > 96 or when off
+        scr = getattr(sh, "a4scr", None)  # vsplit_a4scr screen; its argmax is None for M > 96
         am = scr.argmax(hidden_states) if scr is not None else None
         if am is None:
             am = sh.argmax(hidden_states)
-        if _DUMP is not None and S.batch is not None:
-            _dump(hidden_states, S.batch)
         w = lm_head.weight
         logits = torch.empty(hidden_states.shape[0], w.shape[0], dtype=hidden_states.dtype,
                              device=hidden_states.device)  # never read
@@ -442,11 +340,5 @@ def register() -> None:
 
     if "verify_split_head" not in reg.enabled():
         raise RuntimeError("atdev vsplit_mtp: needs ATDEV_OPT verify_split_head")
-    if os.environ.get("ATDEV_VSPLIT_MTP_ARGMAX", "1") == "1" and \
-            os.environ.get("ATDEV_VSPLIT_FAST", "0") != "1":
-        raise RuntimeError("atdev vsplit_mtp: the argmax path needs ATDEV_VSPLIT_FAST=1 "
-                           "(ascending F ids for the split_argmax tie rule)")
     _install()
-    logger.info("atdev vsplit_mtp: registered (argmax=%s, tail_ms=%s)",
-                os.environ.get("ATDEV_VSPLIT_MTP_ARGMAX", "1"),
-                os.environ.get("ATDEV_VSPLIT_TAIL_MS", ""))
+    logger.info("atdev vsplit_mtp: registered")

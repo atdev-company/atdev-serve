@@ -1,42 +1,33 @@
-"""Context-KV fold for the DFlash2 drafter (ATDEV_OPT=drafter_ctxfold), P7-e.
+"""Context-KV fold for the DFlash2 drafter (ATDEV_OPT=drafter_ctxfold).
 
 Stock (vLLM 0.31.0, MRV2 ``DFlashSpeculator``): the drafter CUDA graph for one request first
 runs ``precompute_and_store_context_kv`` on the step's target rows -- with ``dflash_tree`` that is
-N = 16 rows (one tree verify), of which at most D + 1 = 8 (accepted path + bonus) are valid, the
-rest carry PAD slots -- as 5 extra Marlin ``qkv_proj`` passes (M = 16, 32 us each in situ: the q
-columns are computed and thrown away), a stack/permute copy, a grouped K-norm, RoPE and 5 cache
-inserts; then the 8 query rows run the 5 layers (``qkv_proj`` at M = 8).
+N = 16 rows (one tree verify), of which at most D + 1 (accepted path + bonus) are valid -- as 5 extra
+Marlin ``qkv_proj`` passes (the q columns are computed and thrown away), a stack/permute copy, a
+grouped K-norm, RoPE and 5 cache inserts; then the D + 1 query rows run the 5 layers.
 
-Here the nr = 1 graph instead carries the <= 8 valid context rows *inside* each layer's block
-``qkv_proj`` call: rows [0, 8) = hidden_norm(context), rows [8, 16) = the block -> one Marlin m16
-tile (``results/p7-drafter-micro.txt``: M = 16 costs +3 us over M = 8 and rows are bit-identical
-to the separate calls, since Marlin's per-row math does not depend on the other rows). The context
-K/V of layer i come out of layer i's call, get the layer's K-norm (``ops.rms_norm``, the kernel
-the stock grouped K-norm runs per row), RoPE (``ops.rotary_embedding``, same kernel) and the
-FlashAttention cache insert (``do_kv_cache_update`` -> ``reshape_and_cache_flash``, same kernel)
-before the layer's attention reads them -- so the KV cache content is bit-identical to stock.
-The graph's context rows shrink from 16 to 8 (``_num_graph_context_tokens``); rows of a prefill
-beyond 8 still take the stock eager path, and rows 8..15 of a 16-row verify step (always rejected
-or junk) are skipped. nr > 1 graphs and every eager path keep the stock precompute.
+Here the nr = 1 graph instead carries the D + 1 context rows *inside* each layer's block
+``qkv_proj`` call: rows [0, D + 1) = hidden_norm(context), rows [D + 1, 2 (D + 1)) = the block, in one
+Marlin call (rows are bit-identical to the separate calls, since Marlin's per-row math does not depend
+on the other rows). The context K/V of layer i come out of layer i's call, get the layer's K-norm
+(``ops.rms_norm``, the kernel the stock grouped K-norm runs per row), RoPE (``ops.rotary_embedding``,
+same kernel) and the FlashAttention cache insert (``do_kv_cache_update`` -> ``reshape_and_cache_flash``,
+same kernel) before the layer's attention reads them -- so the KV cache content is bit-identical to
+stock. Inside the graph capture the context chain of each layer runs on a forked stream (joined by
+that layer's FlashAttention forward), overlapping the block rows' q/k norm + RoPE + cache insert.
+Rows of a prefill beyond the graph still take the stock eager path. nr > 1 graphs and every eager
+path keep the stock precompute.
 
 Mechanism: ``DFlashQwen3Attention.forward`` calls the opaque custom op ``atdev_ctxfold_qkv`` in
 place of ``self.qkv_proj`` (vLLM compiles the drafter once and bypasses Dynamo guards, so the
 stock/fold decision cannot be a Python branch inside the traced forward); the op reads a runtime
 flag that the speculator sets while capturing the nr = 1 graph. Requires ``dflash_tree``
 (accepted tokens per step <= D + 1 and N <= 2 (D + 1) hold for both its tree and chain steps).
-
-Env:
-  ATDEV_CTXFOLD_FORK    1: inside the drafter graph capture the context chain of each layer runs on a forked
-                        stream (joined by that layer's FlashAttention forward), overlapping the block rows'
-                        q/k norm + RoPE + cache insert. Same kernels / inputs -> bit-identical (C1-agf)
-  ATDEV_CTXFOLD_VERIFY  N > 0: every N proposals read the folded context K/V back from the cache
-                        and compare bitwise with a stock eager recompute (logs; slow, for tests)
 """
 from __future__ import annotations
 
 import functools
 import logging
-import os
 import types
 
 import torch
@@ -62,10 +53,7 @@ class _State:
         self.cur_has_prefill = False
         self.n_fold_capture = 0
         self.n_skip = 0
-        self.n_prop = 0
-        self.verify_every = int(os.environ.get("ATDEV_CTXFOLD_VERIFY", "0"))
-        # ATDEV_CTXFOLD_FORK: context K-norm / RoPE / cache insert on a forked capture stream
-        self.fork = os.environ.get("ATDEV_CTXFOLD_FORK", "0") == "1"
+        # context K-norm / RoPE / cache insert on a forked capture stream
         self.side = None
         self.join_ev = None  # event the next drafter FlashAttention forward waits on
         self.keep: dict[str, torch.Tensor] = {}  # qkv outputs read by the side branch (no reuse in capture)
@@ -112,8 +100,8 @@ def _fold_qkv(x: torch.Tensor, layer_name: str) -> torch.Tensor:
     assert x.shape[0] == rows and buf is not None and buf.shape[0] == 2 * rows, (x.shape, rows)
     buf[rows:].copy_(x)
     qkv, _ = layer.qkv_proj(buf)  # [2 * rows, q + 2 kv]: one Marlin m16 tile
-    if S.fork and torch.cuda.is_current_stream_capturing():
-        # ATDEV_CTXFOLD_FORK: the context chain (copy, K-norm, RoPE, cache insert of the ctx slots) runs
+    if torch.cuda.is_current_stream_capturing():
+        # the context chain (copy, K-norm, RoPE, cache insert of the ctx slots) runs
         # on a forked branch of the drafter graph, concurrent with the block rows' q/k norm + RoPE + cache
         # insert; the layer's FlashAttention forward joins it. Same kernels / inputs -> bit-identical.
         cur = torch.cuda.current_stream(qkv.device)
@@ -189,7 +177,7 @@ def _install_speculator(spec) -> None:
     from atdev_serve import dflash_tree
 
     S.spec = spec
-    S.rows = spec.num_query_per_req  # 1 + D = block_size (8)
+    S.rows = spec.num_query_per_req  # 1 + D = block_size
     orig_ngc = spec._num_graph_context_tokens
     orig_pre = spec._precompute_context_kv
     orig_cap = spec.capture
@@ -214,17 +202,15 @@ def _install_speculator(spec) -> None:
         n = dflash_tree.S.N
         if (not dummy_run and S.cur_nr == 1 and not S.cur_has_prefill and start == S.rows
                 and n is not None and end <= n):
-            # a 16-row verify step: rows >= D + 1 are rejected drafts / junk (PAD slots)
+            # an N-row verify step: rows >= D + 1 are rejected drafts / junk (PAD slots)
             S.n_skip += 1
             return
         if not dummy_run and S.cur_nr == 1 and start == S.rows and end > n:
             # Prefill: reproduce stock's Marlin M partition exactly. Stock ran rows [0, N) in the graph
-            # (M = 16 tile) and rows [N, end) in one eager call; Marlin's per-row results depend on the
-            # k-split chosen for M, so rows [8, N) must stay in the <= 16-row regime (an M = 8 call is
-            # row-identical to the M = 16 tile, results/p7-drafter-micro.txt) and rows [N, end) must keep
-            # M = end - N. One eager (8, end) call changed both -> drafter K/V of every prompt differed by
-            # ulps -> 94/96 outputs reshuffled (P7-ctxfold-96).
-            if n > start:  # block 8 (rows 8 < N 16); block 16 has rows == N: nothing in between
+            # and rows [N, end) in one eager call; Marlin's per-row results depend on the k-split chosen
+            # for M, so rows [D + 1, N) must stay in the <= 16-row regime and rows [N, end) must keep
+            # M = end - N (one eager (D + 1, end) call would change the drafter K/V by ulps).
+            if n > start:  # rows D + 1 < N; with D + 1 == N there is nothing in between
                 orig_pre(start, n, dummy_run)
             return orig_pre(n, end, dummy_run)
         return orig_pre(start, end, dummy_run)
@@ -246,12 +232,7 @@ def _install_speculator(spec) -> None:
     def propose(self, input_batch, *a, **kw):
         S.cur_nr = input_batch.num_reqs
         S.cur_has_prefill = bool(getattr(input_batch, "has_prefill", False))
-        out = orig_prop(input_batch, *a, **kw)
-        if S.verify_every and not kw.get("dummy_run", False):
-            S.n_prop += 1
-            if S.n_prop % S.verify_every == 0 and S.cur_nr == 1 and not S.cur_has_prefill:
-                _verify(self)
-        return out
+        return orig_prop(input_batch, *a, **kw)
 
     spec._num_graph_context_tokens = types.MethodType(_num_graph_context_tokens, spec)
     spec._precompute_context_kv = types.MethodType(_precompute_context_kv, spec)
@@ -291,57 +272,6 @@ def _install_model(model) -> None:
 
 
 # ---------------------------------------------------------------------------
-# verification: folded cache content vs a stock eager recompute (bitwise)
-# ---------------------------------------------------------------------------
-
-
-@torch.inference_mode()
-def _verify(spec) -> None:
-    from vllm import _custom_ops as ops
-
-    m = S.model
-    rows = S.rows
-    L = m._num_attn_layers
-    nkv, hd = m._num_kv_heads, m._head_dim
-    torch.cuda.synchronize()
-    ctx = spec.hidden_states[:rows]
-    all_k, all_v = m._project_context_kv(ctx, rows, L, nkv, hd)
-    all_k = m._normalize_context_k(all_k)
-    k_flat = all_k.view(L * rows, m._kv_size)
-    cs = m._rope_cos_sin_cache
-    if cs.dtype != k_flat.dtype:
-        cs = cs.to(dtype=k_flat.dtype)
-    ops.rotary_embedding(S.ctx_pos.repeat(L), k_flat, None, m._rope_head_size, cs, m._rope_is_neox)
-    k_ref = k_flat.view(L, rows, nkv, hd)
-    v_ref = all_v
-    bad = 0
-    checked = 0
-    for i, layer in enumerate(m.layers):
-        a = layer.self_attn
-        slots = S.ctx_slots[a.layer_name]
-        kv = a.attn.kv_cache
-        kv = kv[0] if isinstance(kv, (list, tuple)) else kv
-        valid = slots >= 0
-        if not bool(valid.any()):
-            continue
-        # FlashAttention layout [blocks, nkv, block_size, 2 * hd]; slot = block * block_size + offset
-        bs = kv.shape[2]
-        sv = slots[valid]
-        got = kv[sv // bs, :, sv % bs, :]  # [n, nkv, 2 * hd]
-        kr = k_ref[i][valid]
-        vr = v_ref[i][valid]
-        if a.v_scale is not None:
-            vr = vr * a.v_scale
-        bad += int((got[..., :hd] != kr).sum()) + int((got[..., hd:] != vr).sum())
-        checked += kr.numel() + vr.numel()
-    n_valid = int((torch.stack([S.ctx_slots[l.self_attn.layer_name] for l in m.layers]) >= 0).sum())
-    log.warning("atdev %s: VERIFY proposal %d: %d / %d cached context K/V elements differ from the "
-                "stock recompute, %d valid ctx slots over %d layers (%s)", OPT_NAME, S.n_prop, bad, checked,
-                n_valid, L, "bit-identical" if bad == 0 and checked > 0 else
-                ("NO-VALID-SLOTS" if checked == 0 else "MISMATCH"))
-
-
-# ---------------------------------------------------------------------------
 # register
 # ---------------------------------------------------------------------------
 
@@ -363,8 +293,7 @@ def register() -> None:
         return
     if not hasattr(torch.ops.vllm, "atdev_ctxfold_qkv"):
         direct_register_custom_op("atdev_ctxfold_qkv", _fold_qkv, fake_impl=_fold_qkv_fake)
-    if S.fork:
-        _install_join()
+    _install_join()
     _attn_forward._atdev_ctxfold = True
     qd.DFlashQwen3Attention.forward = _attn_forward
 

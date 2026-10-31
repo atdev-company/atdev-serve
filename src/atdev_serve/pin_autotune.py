@@ -1,16 +1,14 @@
 """Pin the Triton ``@triton.autotune`` choices of the FLA chunked GDN prefill kernels (engine determinism).
 
-Finding (LEDGER MODE-*, 2026-10-10): with an empty / different Triton cache every server start re-benchmarks
-FLA's chunked prefill kernels (chunk_fwd_kernel_o, chunk_gated_delta_rule_fwd_kernel_h_blockdim64,
-chunk_scaled_dot_kkt_fwd_kernel, chunk_local_cumsum_scalar_kernel, merge_16x16_to_64x64_inverse_kernel,
-recompute_w_u_fwd_kernel). The winner depends on timing noise (5 fresh starts -> 5 different pick sets); some knobs
-change the reduction blocking, so the prefill state and every later token change -> a server start lands in one of
-several numerical "modes" (identical-output A/B pairs break, ±noise on every c=1 P6 pair). The picks also persist
-in the shared Triton cache, where any later process can add entries under another cache key.
+With an empty / different Triton cache every server start re-benchmarks FLA's chunked prefill kernels
+(chunk_fwd_kernel_o, chunk_gated_delta_rule_fwd_kernel_h_blockdim64, chunk_scaled_dot_kkt_fwd_kernel,
+chunk_local_cumsum_scalar_kernel, merge_16x16_to_64x64_inverse_kernel, recompute_w_u_fwd_kernel). The winner
+depends on timing noise, and some knobs change the reduction blocking, so the prefill state and every later token
+would depend on which configs a given start happened to pick.
 
-Fix: restrict each of these kernels to ONE config (the production cache's pick), so Triton never benchmarks them
-(``len(configs) == 1`` -> no autotune) and every start computes the same prefill numerics. Enabled for every
-ATDEV run (register_all); ATDEV_PIN_AUTOTUNE=0 disables. Stock vLLM (no plugin) is untouched.
+Fix: restrict each of these kernels to ONE config, so Triton never benchmarks them (``len(configs) == 1`` -> no
+autotune) and every start computes the same prefill numerics. register_inductor() does the same for Inductor's
+reduction autotuning. Enabled for every run with the plugin active (register_all); stock vLLM is untouched.
 """
 from __future__ import annotations
 
@@ -18,7 +16,7 @@ import logging
 
 log = logging.getLogger("atdev_serve")
 
-# kernel name -> (kwargs, num_warps, num_stages); production Triton-cache picks (results/MODE-*; 2026-10-05/06)
+# kernel name -> (kwargs, num_warps, num_stages)
 PINS = {
     "chunk_local_cumsum_scalar_kernel": ({}, 4, 3),
     "chunk_scaled_dot_kkt_fwd_kernel": ({"BK": 32}, 8, 4),

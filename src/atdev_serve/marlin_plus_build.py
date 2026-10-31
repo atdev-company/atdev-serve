@@ -45,11 +45,10 @@ def instantiations() -> list[tuple]:
     return sorted(out)
 
 
-# P1 stage 2 chain kernel: (a8, tmb, m8, tk, tn, threads, stages) -- stock small-M
-# configs (c=1 M=16 bf16) and the marlin_plus M=64 int8 configs
-CHAIN = [(0, 1, 0, 128, 128, 256, 4), (0, 1, 0, 64, 128, 128, 4), (0, 1, 0, 128, 64, 128, 4),
-         (0, 1, 1, 128, 128, 256, 4), (0, 1, 1, 128, 64, 128, 4), (0, 2, 0, 64, 256, 256, 4),
-         (1, 4, 0, 128, 256, 256, 4), (1, 4, 0, 128, 128, 256, 6), (1, 4, 0, 64, 256, 256, 4)]
+# Chained-GEMM kernel instantiations (a8, tmb, m8, tk, tn, threads, stages). Empty for marlin_plus;
+# generate() still writes the (empty) chain kernel file and selector, which the private builds
+# derived from this module (marlin_c1_build, marlin_c1_w3_build) include.
+CHAIN: list[tuple] = []
 
 
 def _tmpl_chain(i) -> str:
@@ -130,13 +129,9 @@ def _write_if_changed(path, src):
 _MOD = None
 
 
-DEFAULT_DEFINES = "MP_FOLD=1,MP_PURE_ASM=0"
-
-
 def defines() -> list[str]:
-    """ATDEV_MP_DEFINES (comma list, e.g. "MP_FOLD=1,MP_PURE_ASM=1") -> -D flags."""
-    s = os.environ.get("ATDEV_MP_DEFINES", DEFAULT_DEFINES)
-    return ["-D" + d.strip() for d in s.split(",") if d.strip()]
+    """Kernel variant defines: folded group scales (MP_FOLD=1), inline-asm mma (MP_PURE_ASM=0)."""
+    return ["-DMP_FOLD=1", "-DMP_PURE_ASM=0"]
 
 
 def load(verbose: bool = False):

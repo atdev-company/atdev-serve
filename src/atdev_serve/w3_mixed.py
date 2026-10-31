@@ -1,14 +1,10 @@
-"""ATDEV_OPT=w3_mixed -- bet #2 (docs/research/bet2-w3.md): fewer weight bytes.
+"""ATDEV_OPT=w3_mixed: 3-bit weights for selected linears of the RedHatAI INT4 target.
 
-Selected linears of the RedHatAI INT4 checkpoint are replaced at load time by 3-bit (or 2-bit)
-g128 symmetric re-quantisations from a *sidecar* safetensors file (scripts/w3_quant.py), stored
-in the checkpoint's own compressed-tensors int4 layout (nibbles q + 8 with q in [-4, 3]). Two
-paths, chosen by ATDEV_W3_KERNEL:
-
-  * "1" (default): after vLLM's Marlin repack, the int4-layout weight is re-packed to the 3-bit
-    planar layout (pack_w3, 0.758x the bytes) and the layer runs the marlin_plus W3 kernel
-    (csrc/marlin_plus_w3). With the stock tile config the output is bit-identical to path "0".
-  * "0": accuracy study only -- the 3-bit-valued weights run through the unchanged int4 Marlin.
+The linears matched by W3_LAYERS are replaced at load time by 3-bit g128 symmetric re-quantisations from a
+*sidecar* safetensors overlay, stored in the checkpoint's own compressed-tensors int4 layout (nibbles q + 8 with
+q in [-4, 3]). After vLLM's Marlin repack the int4-layout weight is re-packed to the 3-bit planar layout
+(pack_w3, 0.758x the bytes) and the layer runs the marlin_plus W3 kernel (csrc/marlin_plus_w3, tile configs
+w3_fastdq_cfg.json; shapes / M buckets without an entry use the stock Marlin heuristic).
 
 Env:
   ATDEV_W3_SIDECAR   comma-separated sidecar files (later files win per tensor); each entry may also be
@@ -16,10 +12,6 @@ Env:
                      ``org/name[@rev]:folder/`` (all *.safetensors in that subfolder, sorted, e.g.
                      ``atdev-company/Qwen3.8-27B-atdev-c1:w3/``) or ``org/name[@rev]:path/file.safetensors``
                      (atdev_serve.hub)
-  ATDEV_W3_LAYERS    optional regex on checkpoint tensor names (e.g. 'linear_attn|mlp') to use a subset
-  ATDEV_W3_KERNEL    1 (default) / 0
-  ATDEV_W3_CONFIG    optional json {"N,K": {"<M bucket>": [tk, tn, threads, stages, bps, max_tmb]}};
-                     default = stock Marlin heuristic (bit-exact with path 0)
 """
 from __future__ import annotations
 
@@ -42,6 +34,9 @@ FUSED = {"linear_attn.in_proj_qkv": "linear_attn.in_proj_qkvz", "linear_attn.in_
 SHARDS = {"linear_attn.in_proj_qkvz": 2, "linear_attn.out_proj": 1, "self_attn.qkv_proj": 3,
           "self_attn.o_proj": 1, "mlp.gate_up_proj": 2, "mlp.down_proj": 1}
 
+# checkpoint tensors taken from the sidecar: MLP, GDN in_proj_qkv / in_proj_z / out_proj, attention q / k / v / o
+W3_LAYERS = r"mlp\.|linear_attn\.(in_proj_qkv|in_proj_z|out_proj)$|self_attn\.(q|k|v|o)_proj$"
+CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "w3_fastdq_cfg.json")
 _STATE: dict = {"sub": {}, "fused_count": {}, "fused_ok": set(), "n_sub": 0, "drafter_loading": False}
 
 
@@ -68,7 +63,6 @@ def sidecar_files() -> list[str]:
 def load_sidecar_index():
     """{checkpoint tensor name (without .weight_packed): (file, meta)}"""
     from safetensors import safe_open
-    flt = os.environ.get("ATDEV_W3_LAYERS", "")
     sub = {}
     for path in sidecar_files():
         with safe_open(path, "pt", device="cpu") as f:
@@ -77,7 +71,7 @@ def load_sidecar_index():
                 if not k.endswith(".weight_packed"):
                     continue
                 base = k[: -len(".weight_packed")]
-                if flt and not re.search(flt, base):
+                if not re.search(W3_LAYERS, base):
                     continue
                 sub[base] = (path, meta.get("bits", "?"))
     return sub
@@ -112,18 +106,6 @@ def pack_w3(mq: torch.Tensor, n: int, k: int) -> torch.Tensor:
     return out.contiguous()
 
 
-def unpack_w3(q3: torch.Tensor, n: int, k: int) -> torch.Tensor:
-    """inverse of pack_w3 (host reference for tests)"""
-    w = q3.to(torch.int64) & 0xFFFFFFFF
-    p0, p1, p2 = w[:, 0], w[:, 1], w[:, 2]
-    t0 = (p0 & 0x77777777) + 0x44444444
-    t1 = (p1 & 0x77777777) + 0x44444444
-    t2 = (p2 & 0x77777777) + 0x44444444
-    t3 = (((p0 >> 3) & 0x11111111) | ((p1 >> 2) & 0x22222222) | ((p2 >> 1) & 0x44444444)) + 0x44444444
-    out = torch.stack([t0, t1, t2, t3], dim=-1).view(k // 16, 2 * n)
-    return torch.where(out >= 2**31, out - 2**32, out).to(torch.int32).contiguous()
-
-
 def mod():
     global _MOD
     if _MOD is None:
@@ -152,8 +134,7 @@ def m_bucket(m: int) -> str:
 def table() -> dict:
     global _TABLE
     if _TABLE is None:
-        path = os.environ.get("ATDEV_W3_CONFIG", "")
-        _TABLE = json.load(open(path)) if path and os.path.exists(path) else {}
+        _TABLE = json.load(open(CONFIG))
     return _TABLE
 
 
@@ -214,7 +195,6 @@ def _wrap_loader():
 def _wrap_kernel():
     from vllm.model_executor.kernels.linear.mixed_precision.marlin import MarlinLinearKernel
     from vllm.scalar_type import scalar_types
-    kernel_on = os.environ.get("ATDEV_W3_KERNEL", "1") == "1"
     orig_pw = MarlinLinearKernel.process_weights_after_loading
     orig_apply = MarlinLinearKernel.apply_weights
     if getattr(orig_pw, "_atdev_w3", False):
@@ -223,7 +203,7 @@ def _wrap_kernel():
     def process_weights_after_loading(self, layer):
         orig_pw(self, layer)
         prefix = norm_prefix(getattr(layer, "prefix", "") or "")
-        if not kernel_on or _STATE["drafter_loading"] or prefix not in _STATE["fused_ok"]:
+        if _STATE["drafter_loading"] or prefix not in _STATE["fused_ok"]:
             return
         c = self.config
         if c.weight_type != scalar_types.uint4b8 or c.group_size != 128 or c.act_type != torch.bfloat16:
@@ -271,13 +251,11 @@ def _wrap_kernel():
 
 
 def register() -> None:
-    import vllm
     from vllm.utils.torch_utils import direct_register_custom_op
     from atdev_serve.compile_cache import salt_aot_cache
     salt_aot_cache(OPT_NAME, __file__)
     from atdev_serve import compile_cache
-    compile_cache._SALTS[OPT_NAME] += "+k=" + os.environ.get("ATDEV_W3_KERNEL", "1") + "+" + ",".join(
-        os.path.basename(p) for p in sidecar_files()) + "+" + os.environ.get("ATDEV_W3_LAYERS", "")
+    compile_cache._SALTS[OPT_NAME] += "+" + ",".join(os.path.basename(p) for p in sidecar_files())
     sub = load_sidecar_index()
     _STATE["sub"] = sub
     cnt: dict = {}
@@ -308,7 +286,6 @@ def register() -> None:
     except ImportError:
         pass
     bits = sorted({b for _, b in sub.values()})
-    log.warning("atdev %s: %d sidecar tensors from %s (bits %s) -> %d fused layers on the %s path%s",
+    log.warning("atdev %s: %d sidecar tensors from %s (bits %s) -> %d fused layers on the W3 kernel%s",
                 OPT_NAME, len(sub), sidecar_files(), bits, len(ok),
-                "W3 kernel" if os.environ.get("ATDEV_W3_KERNEL", "1") == "1" else "int4-Marlin (accuracy)",
                 f"; {len(partial)} partially covered fused layers stay int4: {partial[:4]}" if partial else "")

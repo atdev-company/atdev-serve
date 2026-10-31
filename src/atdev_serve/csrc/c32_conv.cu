@@ -1,4 +1,4 @@
-// C32a-conv-pdl: vLLM causal_conv1d_update (width 4, SiLU, no bias, spec decoding, varlen, null block),
+// c32_conv: vLLM causal_conv1d_update (width 4, SiLU, no bias, spec decoding, varlen, null block),
 // bit-identical to the stock Triton kernel's op sequence (products rounded to bf16 by fma.rn.bf16 with -0,
 // fp32 adds in tap order from 0, SiLU = acc / (1 + ex2.approx(-acc * log2e)) with div.full, bf16 RN out),
 // optionally launched as a programmatic dependent (PDL) of the producer GEMM: the request metadata, the

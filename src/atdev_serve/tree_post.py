@@ -1,9 +1,9 @@
-"""Fused c=1 tree post-verify prologue (dflash_tree ATDEV_TREE_POST_FUSED=1).
+"""Fused c=1 tree post-verify prologue (dflash_tree).
 
 One single-program Triton launch replaces the 8 tiny eager kernels between the verify head's argmax
-and the compaction kernels of a c=1 tree step (results/prof-DG-stack e1: _tree_accept_kernel,
-_get_num_sampled_and_rejected_kernel, _tree_pos_kernel, the torch.stack of the 10 GDN groups' state
-indices, and the 4 elementwise ops of the drafter context gather index):
+and the compaction kernels of a c=1 tree step (_tree_accept_kernel, _get_num_sampled_and_rejected_kernel,
+_tree_pos_kernel, the torch.stack of the 10 GDN groups' state indices, and the 4 elementwise ops of the
+drafter context gather index):
 
   1. greedy tree accept           == gdn_tree._tree_accept_kernel (same walk, same -1 padding)
   2. num_sampled / num_rejected   == vLLM 0.31 input_batch._get_num_sampled_and_rejected_kernel
@@ -11,8 +11,7 @@ indices, and the 4 elementwise ops of the drafter context gather index):
   4. state_idx [G, 1, 2]          == torch.stack([block_tables[g][:1, :2] for g in gdn_groups])
   5. drafter gather index [N]     == torch.where(ar < ns[0], path[0, :N].long(), ar)
 
-All integer work, so "identical" is exact (tests/test_tree_accept_graph.py compares every output and
-every cache / position tensor against the unfused path, eager and graphed).
+All integer work, so the outputs are exactly those of the unfused path.
 """
 from __future__ import annotations
 

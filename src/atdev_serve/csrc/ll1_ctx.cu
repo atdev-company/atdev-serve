@@ -1,4 +1,4 @@
-// LL1-ctx (ATDEV_LL1_CTX=1): the DFlash2 drafter_ctxfold context-K/V chain of one layer as ONE kernel.
+// ll1_fuse ctx: the DFlash2 drafter_ctxfold context-K/V chain of one layer as ONE kernel.
 // Stock chain (drafter_ctxfold._ctx_kv_store, 4 launches): k = qkv[:, q:q+kv].contiguous(); vLLM rms_norm_kernel
 // (K-norm per (row, kv head), hidden 128); vLLM rotary_embedding_kernel (neox, rot_dim 128); vLLM
 // reshape_and_cache_flash_kernel (bf16 cache, kAuto). This kernel reproduces each step's arithmetic exactly:
@@ -7,7 +7,7 @@
 //     lanes), lane 0 holds the sum; s = rsqrtf(var / 128 + eps); out = bf16(x * s * w).
 //   * rotary (neox): x_f, y_f = float(kn[i]), float(kn[i + 64]); cos/sin from the bf16 cache row of the position;
 //     kx = bf16(x_f * cos_f - y_f * sin_f); ky = bf16(y_f * cos_f + x_f * sin_f) (same expressions -> same FMA
-//     contraction as the vLLM build; checked bitwise by tests/test_ll1_fuse.py).
+//     contraction as the vLLM build).
 //   * cache insert: slot < 0 -> skip the row; k / v rows copied to key_cache / value_cache at
 //     block * block_stride + offset * page_stride + head * head_stride.
 // One CTA per context row, 16 threads per kv head (blockDim = 16 * nkv).

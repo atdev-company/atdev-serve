@@ -1,17 +1,16 @@
-// LL1-kpc (ATDEV_LL1_KPC=1): DFlash2 drafter DFlashGroupedConv.prepare at the c=1 block (M = 16 rows) as ONE kernel:
+// ll1_fuse kpc: DFlash2 drafter DFlashGroupedConv.prepare at the c=1 block (M = 16 rows) as ONE kernel:
 //   kernel_projection (bf16 [16, 5120] x [1280, 5120]^T) + split-K reduce + side-0 grouped conv (taps 2, group 16).
 // Stock: cuBLAS ampere_s16816gemm_bf16_64x64_ldg8_stages_64x6_tn grid [20, 1, 5] (split-K S = 5, 1024 k per split)
 // + cublasLt splitKreduce_kernel + Triton _dflash2_grouped_conv_kernel (+ ctxfold's copy into the fold buffer).
-// Bit-identity rests on (tests/test_ll1_fuse.py kpc):
+// Bit-identity rests on:
 //   * per output element and split: acc = 0; for every k16 chunk of the split in k order:
 //     acc = mma.m16n8k16.row.col.f32.bf16 (canonical fragment layout, as ldmatrix of CUTLASS / cuBLAS)
 //   * reduce: v = ((((0 + p0) + p1) + p2) + p3) + p4, out = bf16_rn(v)
 //   * conv (Triton's PTX with fp fusion): c0 = base[0][c] + d[r][0][g], c1 = base[1][c] + d[r][1][g] (tap masked to
 //     (0, 0) at position r % block == 0), acc = fma(c0, x[r][c], c1 * x[r-1][c]), out = bf16_rn(acc).
-// Work split (v2, no cross-CTA reduction): CTA = 8 groups of one side = 2 n8 tiles (tap-0 and tap-1 columns of the
+// Work split (no cross-CTA reduction): CTA = 8 groups of one side = 2 n8 tiles (tap-0 and tap-1 columns of the
 // groups) x 5 splits = 10 warps; warp (tile, split) runs the split's sequential mma chain. The 5 split partials meet
 // in shared memory and are summed in split order; side-0 CTAs then run the conv of their 128 channels. 80 CTAs.
-// (v1 = 200 CTAs + global split partials / arrival counter: results/LL1/ll1_kpc_v1_splitk_atomic.cu, tail too slow.)
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_bf16.h>
@@ -21,10 +20,7 @@ namespace {
 constexpr int M = 16, K = 5120, N = 1280, S = 5, KS = K / S;  // 1024 k per split
 constexpr int G = 320, CH = 5120;                             // groups, channels
 constexpr int KT = 64, NKT = KS / KT;                         // k tile, tiles per split (16)
-#ifndef KPC_STAGES
-#define KPC_STAGES 4
-#endif
-constexpr int STAGES = KPC_STAGES;
+constexpr int STAGES = 4;
 constexpr int GPC = 8;                       // groups per CTA
 constexpr int WARPS = 2 * S;                 // (tile, split)
 constexpr int THREADS = 32 * WARPS;          // 320

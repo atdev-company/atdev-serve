@@ -36,13 +36,12 @@ WORKDIR /opt/atdev-serve
 COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY src ./src
 # hadolint ignore=DL3013
-RUN pip install ".[bench]" \
+RUN pip install . \
  && python -c "import atdev_serve, vllm; assert vllm.__version__ == '${VLLM_VERSION}'"
 
 COPY serve_c1.sh serve_c32.sh ./
-COPY bench ./bench
 COPY docker/entrypoint.sh /usr/local/bin/atdev-entrypoint
-RUN chmod +x serve_c1.sh serve_c32.sh bench/*.sh /usr/local/bin/atdev-entrypoint
+RUN chmod +x serve_c1.sh serve_c32.sh /usr/local/bin/atdev-entrypoint
 
 EXPOSE 8100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=3h --retries=3 \

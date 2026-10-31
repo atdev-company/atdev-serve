@@ -1,9 +1,9 @@
 """Tree verification kernels for the hybrid GDN target (ATDEV_OPT=dflash_tree).
 
-Composes with A3 ``gdn_single_state``: same slots, same token-log layout, same
+Composes with ``gdn_single_state``: same slots, same token-log layout, same
 parity double buffer, and -- after the per-step *compaction* below -- exactly
-A3's replay semantics, so every stock / A3 code path (prefill, mixed batches,
-the A3 dispatcher) stays valid between tree steps.
+its replay semantics, so every stock / single-state code path (prefill, mixed
+batches, the dispatcher) stays valid between tree steps.
 
 Per request and step the verify batch holds the N nodes of a token tree in
 topological order (node 0 = root = last accepted token). Node i's state is its
@@ -21,21 +21,20 @@ from the pre-root state S_0 (the ancestor-masked chunk / "TreeWY" form):
 
 (I + A) is unit lower triangular in topological order, A is nilpotent, so
 (I + A)^-1 = (I - A)(I + A^2)(I + A^4)(I + A^8) for N <= 16: six 16x16x16
-products instead of an N-step dependent row solve (the old kernel's solve loop
-was the bottleneck: 67-195 us/layer at N=32). All products run in IEEE fp32
+products instead of an N-step dependent row solve. All products run in IEEE fp32
 (``input_precision="ieee"``, FMA, no TF32 anywhere by default).
 
 Step protocol (per GDN layer, request with state slots s0 = indices[n,0],
 s1 = indices[n,1], a = num_accepted >= 1 from the previous step):
   1. h <- slot s0 (state after the previous root); replay log entries
-     0..a-2 sequentially (identical instructions to A3's kernel),
+     0..a-2 sequentially (identical instructions to gdn_single_state's kernel),
   2. tree pass above; outputs for all N nodes,
   3. slot s0 <- state after the root (the single state write),
   4. log buffer (1-p) <- (k, v, decay, beta) of nodes 1..N-1 (entry = node-1),
      parity flips.
 After the target's acceptance (path = root..a-1 node indices) the runner
 launches ``compact_gdn_log`` once for all 48 layers: entries path[d]-1 move to
-d-1, so the log is in A3's sequential order and step 1 above (and A3 / the
+d-1, so the log is in sequential order and step 1 above (and gdn_single_state / the
 dispatcher in mixed batches) replays the right tokens. For a chain path the
 compaction is a no-op.
 
@@ -49,21 +48,19 @@ Full-attention layers: vLLM's TRITON_ATTN ``unified_attention`` takes a
 slot of position pos0+i and ``compact_kv`` moves path nodes to pos0+d.
 
 Also here: the GPU tree builder (best-first k-best paths over DFlash2's CRF
-lattice, same algorithm as ``tree_spec.build_tree``), greedy tree acceptance,
+lattice), greedy tree acceptance,
 and the tiny per-step activation / position kernels used by
 ``atdev_serve.dflash_tree``.
 
-Files: this module, atdev_serve/dflash_tree.py (vLLM glue),
-tests/test_gdn_tree.py, docs/research/tree-verify.md.
+The CUDA tree kernel (gdn_tree_cuda) replaces gdn_tree_verify + conv_tree_update
+for one request; these Triton kernels run every other pure spec-decode batch.
 """
 
 from __future__ import annotations
 
-import os
-
 import torch
 
-from atdev_serve.gdn_single_state import L2NORM_EPS, log_layout, slot_capacity_f32
+from atdev_serve.gdn_single_state import log_layout, slot_capacity_f32
 
 try:
     import triton
@@ -73,119 +70,6 @@ try:
 except ImportError:  # pragma: no cover
     triton = None
     tl = None
-
-
-# ---------------------------------------------------------------------------
-# Torch references
-# ---------------------------------------------------------------------------
-
-
-def ancestor_matrix(parent: torch.Tensor) -> torch.Tensor:
-    """parent [N] (root = -1) -> M [N, N] bool, M[i, j] = j anc-or-self of i."""
-    n = parent.numel()
-    m = torch.zeros(n, n, dtype=torch.bool)
-    par = parent.tolist()
-    for i in range(n):
-        j = i
-        while j >= 0:
-            m[i, j] = True
-            j = par[j]
-    return m
-
-
-def anc_bits_from_parent(parent: torch.Tensor) -> torch.Tensor:
-    """int64 bitmask per node (N <= 63) of its ancestors-or-self."""
-    m = ancestor_matrix(parent)
-    w = (1 << torch.arange(m.shape[1], dtype=torch.int64))
-    return (m.to(torch.int64) * w).sum(1)
-
-
-def ref_rank1(S, k, v, decay, beta):
-    """S [..., V, K] -> state after one token (same op order as the kernels)."""
-    S = S * decay[..., None, None]
-    delta = (v - (S * k[..., None, :]).sum(-1)) * beta[..., None]
-    return S + delta[..., :, None] * k[..., None, :]
-
-
-def ref_tree_scan(q, k, v, decay, beta, parent, S0):
-    """Ground truth: per-node recurrence. Shapes (one head or batched heads
-    in leading dims): q, k [N, ..., K]; v [N, ..., V]; decay, beta [N, ...];
-    S0 [..., V, K]. Returns o [N, ..., V], states [N, ..., V, K]."""
-    n = q.shape[0]
-    states = [None] * n
-    o = torch.empty(v.shape, dtype=S0.dtype)
-    for i in range(n):
-        p = int(parent[i])
-        Sp = S0 if p < 0 else states[p]
-        Si = ref_rank1(Sp, k[i], v[i], decay[i], beta[i])
-        states[i] = Si
-        o[i] = (Si * q[i][..., None, :]).sum(-1)
-    return o, torch.stack(states)
-
-
-def ref_tree_wy(q, k, v, decay, beta, parent, S0):
-    """The ancestor-masked closed form, one head: q, k [N, K]; v [N, V];
-    S0 [V, K]. Returns o [N, V], w [N, V], G [N]."""
-    M = ancestor_matrix(parent).to(S0.dtype)
-    Ms = M - torch.eye(M.shape[0], dtype=S0.dtype)
-    G = M @ torch.log(decay)
-    ratio = torch.exp((G[:, None] - G[None, :]) * M) * M  # 0 off-ancestor
-    A = Ms * ratio * (k @ k.T)
-    rhs = beta[:, None] * (v - torch.exp(G)[:, None] * (k @ S0.T))
-    w = torch.linalg.solve_triangular(torch.eye(len(G), dtype=S0.dtype) + beta[:, None] * A,
-                                      rhs, upper=False)
-    o = torch.exp(G)[:, None] * (q @ S0.T) + (M * ratio * (q @ k.T)) @ w
-    return o, w, G
-
-
-def ref_state_from_wy(path, k, w, G, S0):
-    """S after the last node of ``path`` (root..a) from the WY factors."""
-    a = path[-1]
-    S = torch.exp(G[a]) * S0
-    for j in path:
-        S = S + torch.exp(G[a] - G[j]) * torch.outer(w[j], k[j])
-    return S
-
-
-def ref_token_params(q, k, a, b, A_log, dt_bias, scale, sp_beta=1.0, sp_thr=20.0):
-    dt = q.dtype
-    q = q * torch.rsqrt((q * q).sum(-1, keepdim=True) + L2NORM_EPS) * scale
-    k = k * torch.rsqrt((k * k).sum(-1, keepdim=True) + L2NORM_EPS)
-    x = a.to(dt) + dt_bias.to(dt)
-    sp = torch.where(sp_beta * x <= sp_thr, torch.log1p(torch.exp(sp_beta * x)) / sp_beta, x)
-    decay = torch.exp(-torch.exp(A_log.to(dt)) * sp)
-    beta = torch.sigmoid(b.to(dt))
-    return q, k, decay, beta
-
-
-def ref_conv_tree(x, weight, bias, window, conv_src, activation=True):
-    """x [N, C]; weight [C, 4]; window [3, C] (oldest first); conv_src [N, 3]
-    (1st, 2nd, 3rd ancestor; -1..-3 = window[2], window[1], window[0])."""
-    n = x.shape[0]
-    out = torch.empty_like(x)
-    for i in range(n):
-        cols = []
-        for s in range(3):
-            j = int(conv_src[i, s])
-            cols.append(x[j] if j >= 0 else window[3 + j])
-        y = (weight[:, 3] * x[i] + weight[:, 2] * cols[0] + weight[:, 1] * cols[1]
-             + weight[:, 0] * cols[2])
-        if bias is not None:
-            y = y + bias
-        out[i] = torch.nn.functional.silu(y) if activation else y
-    return out
-
-
-def conv_window_index(prev_path, num_accepted):
-    """Indices into the stored conv array [h2, h3, x_0..x_{T-1}] of the 3
-    window columns (oldest first) after accepting prev_path[:a]."""
-    a = int(num_accepted)
-    idx = []
-    for j in (a - 3, a - 2, a - 1):
-        idx.append(2 + int(prev_path[j]) if j >= 0 else 2 + j)
-    return idx
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +126,7 @@ if triton is not None:
                      mask=cmask[None, :])
             return
 
-        # ---- 1) pre-root state: slot 0 + sequential replay (== A3 kernel)
+        # ---- 1) pre-root state: slot 0 + sequential replay (== gdn_single_state kernel)
         n_acc = tl.load(acc_ptr + n)
         n_rep = tl.minimum(tl.maximum(n_acc - 1, 0), MAX_LOG)
         par_addr = par_ptr + s1 * slot_par + hv * NV + iv
@@ -373,7 +257,7 @@ if triton is not None:
             tl.store(wbuf + B_OFF + (cj - 1) * HV + hv, beta_c, mask=lmask_c)
         tl.store(par_addr, 1 - p)
 
-        # ---- 7) P1-F1: gated RMSNorm of the head's output by the last of the
+        # ---- 7) gated RMSNorm of the head's output by the last of the
         # NV programs of (n, hv) (ticket), replacing the separate FLA
         # layer_norm_fwd launch and the strided-gate copy. Same fp32 op order
         # as layernorm_guard.layer_norm_fwd_kernel (norm_before_gate, rms).
@@ -402,73 +286,6 @@ if triton is not None:
                 tl.atomic_xchg(tick_ptr + n * HV + hv, 0)
 
     @triton.jit
-    def _conv_tree_kernel(
-        x_ptr, stride_x, w_ptr, bias_ptr,
-        cs_ptr, stride_cs_slot, stride_cs_dim, stride_cs_tok,
-        si_ptr, stride_si, cu_ptr, acc_ptr,
-        src_ptr, stride_src_req,
-        o_ptr, stride_o, dim,
-        HAS_BIAS: tl.constexpr, ACT: tl.constexpr, BC: tl.constexpr,
-        STATE_LEN: tl.constexpr,
-    ):
-        """Stock-layout conv state [h2, h3, x_0..x_{T-1}], window at offset
-        a-1 (exactly stock's spec-decode convention); node t convolves with
-        conv_src[t] = (1st, 2nd, 3rd ancestor), negatives = window (-1 newest)."""
-        n = tl.program_id(0)
-        cb = tl.program_id(1)
-        bos = tl.load(cu_ptr + n).to(tl.int64)
-        eos = tl.load(cu_ptr + n + 1).to(tl.int64)
-        T = eos - bos
-        if T <= 0:
-            return
-        slot = tl.load(si_ptr + n * stride_si).to(tl.int64)
-        if slot <= 0:
-            return
-        ch = cb * BC + tl.arange(0, BC)
-        cm = ch < dim
-        base = cs_ptr + slot * stride_cs_slot + ch * stride_cs_dim
-        off = tl.load(acc_ptr + n).to(tl.int64) - 1
-        w_0 = tl.load(base + off * stride_cs_tok, mask=cm, other=0.0)
-        w_1 = tl.load(base + (off + 1) * stride_cs_tok, mask=cm, other=0.0)
-        w_2 = tl.load(base + (off + 2) * stride_cs_tok, mask=cm, other=0.0)
-        wt0 = tl.load(w_ptr + ch * 4 + 0, mask=cm, other=0.0).to(tl.float32)
-        wt1 = tl.load(w_ptr + ch * 4 + 1, mask=cm, other=0.0).to(tl.float32)
-        wt2 = tl.load(w_ptr + ch * 4 + 2, mask=cm, other=0.0).to(tl.float32)
-        wt3 = tl.load(w_ptr + ch * 4 + 3, mask=cm, other=0.0).to(tl.float32)
-        if HAS_BIAS:
-            bias = tl.load(bias_ptr + ch, mask=cm, other=0.0).to(tl.float32)
-        else:
-            bias = tl.zeros([BC], dtype=tl.float32)
-        tl.debug_barrier()
-        f0 = w_0.to(tl.float32)
-        f1 = w_1.to(tl.float32)
-        f2 = w_2.to(tl.float32)
-        for t in range(0, T):
-            xt = tl.load(x_ptr + (bos + t) * stride_x + ch, mask=cm, other=0.0).to(tl.float32)
-            y = bias + wt3 * xt
-            for s in tl.static_range(3):
-                j = tl.load(src_ptr + n * stride_src_req + t * 3 + s)
-                jj = tl.maximum(j, 0)
-                xa = tl.load(x_ptr + (bos + jj) * stride_x + ch, mask=cm, other=0.0).to(tl.float32)
-                wa = tl.where(j == -1, f2, tl.where(j == -2, f1, f0))
-                col = tl.where(j >= 0, xa, wa)
-                if s == 0:
-                    y += wt2 * col
-                elif s == 1:
-                    y += wt1 * col
-                else:
-                    y += wt0 * col
-            if ACT:
-                y = y * tl.sigmoid(y)
-            tl.store(o_ptr + (bos + t) * stride_o + ch, y.to(o_ptr.dtype.element_ty), mask=cm)
-        tl.store(base + 0 * stride_cs_tok, w_1, mask=cm)
-        tl.store(base + 1 * stride_cs_tok, w_2, mask=cm)
-        for t in range(0, T):
-            xt = tl.load(x_ptr + (bos + t) * stride_x + ch, mask=cm, other=0.0)
-            tl.store(base + (2 + t) * stride_cs_tok, xt.to(cs_ptr.dtype.element_ty),
-                     mask=cm & (2 + t < STATE_LEN))
-
-    @triton.jit
     def _conv_tree_vec_kernel(
         x_ptr, stride_x, w_ptr, bias_ptr,
         cs_ptr, stride_cs_slot, stride_cs_dim, stride_cs_tok,
@@ -481,7 +298,7 @@ if triton is not None:
         """Same math (and fp32 op order) as _conv_tree_kernel, but all T <= TP
         tokens of a channel block are computed as one [TP, BC] tile, so the
         token / ancestor loads are issued together instead of a serial,
-        latency-bound loop over T (reframe B: 12 us -> few us per layer)."""
+        latency-bound loop over T."""
         n = tl.program_id(0)
         cb = tl.program_id(1)
         bos = tl.load(cu_ptr + n).to(tl.int64)
@@ -580,12 +397,12 @@ if triton is not None:
         scores_ptr, cand_ptr, rmap_ptr, rmap_stride,
         tok_out_ptr, stride_tok_out,
         mpar_ptr, mdep_ptr, manc_ptr, mconv_ptr,
-        inv_temp, unary_ptr, mix_a, pw,
+        inv_temp,
         N: tl.constexpr, NP: tl.constexpr, K: tl.constexpr, D: tl.constexpr,
-        CHAIN: tl.constexpr, MIX: tl.constexpr = False,
+        CHAIN: tl.constexpr,
     ):
         """Best-first (k-best paths) tree over DFlash2's CRF lattice for one
-        request (== tree_spec.build_tree with edge_logprobs(scores / T)), or,
+        request (node value = cumulative log_softmax(scores / T)), or,
         with CHAIN, vLLM's greedy walk (D nodes) padded with dead leaves.
 
         scores [R, D, K, K] fp32, cand [R, D, K] int64. Writes the N-1 draft
@@ -613,20 +430,10 @@ if triton is not None:
             rowoff = (dep * K + cid) * K
             S = tl.load(sbase + rowoff[:, None] + kk[None, :], mask=alive[:, None],
                         other=0.0)
-            if MIX:
-                # E7 marginal mix: edge = (1-a) log_softmax((u + pw (s - u)) / T) + a log_softmax(u)
-                U = tl.load(unary_ptr + r * (D * K) + (dep * K)[:, None] + kk[None, :],
-                            mask=alive[:, None], other=0.0)
-                S = (U + pw * (S - U)) * inv_temp
-                mu = tl.max(U, axis=1)
-                lu = U - (mu + tl.log(tl.sum(tl.exp(U - mu[:, None]), axis=1)))[:, None]
-            else:
-                S = S * inv_temp
+            S = S * inv_temp
             m = tl.max(S, axis=1)
             lse = m + tl.log(tl.sum(tl.exp(S - m[:, None]), axis=1))
             E = S - lse[:, None]
-            if MIX:
-                E = (1.0 - mix_a) * E + mix_a * lu
             usedbit = ((used[:, None] >> kk[None, :]) & 1) != 0
             cv = tl.where(alive[:, None] & (~usedbit), val[:, None] + E, NEG)
             rowbest = tl.max(cv, axis=1)
@@ -848,7 +655,7 @@ def _rows2d(x: torch.Tensor, width: int) -> torch.Tensor:
 
 
 def tree_log_layout(state: torch.Tensor, num_k_heads: int, num_slots: int, block_v: int):
-    """A3 log layout for a spec slot row of ``num_slots`` (max log = S-1)."""
+    """gdn_single_state log layout for a spec slot row of ``num_slots`` (max log = S-1)."""
     _, hv, vdim, kdim = state.shape
     lay = log_layout(num_k_heads, hv, kdim, vdim, block_v, num_slots - 1)
     if lay["total"] > slot_capacity_f32(state):
@@ -874,14 +681,14 @@ def gdn_tree_verify(*, q, k, v, a, b, A_log, dt_bias, state, state_indices,
                     softplus_beta=1.0, softplus_threshold=20.0,
                     num_requests=None, output_gate=None, norm_weight=None, norm_eps=1e-6,
                     sigmoid_gate=False) -> None:
-    """Tree verify, A3 slot layout. state_indices [R, S] (S = node budget;
+    """Tree verify, gdn_single_state slot layout. state_indices [R, S] (S = node budget;
     log holds S-1 entries). anc_bits [R, >= T] int64 (bit j of row i = node j
     is an ancestor-or-self of node i). Output: un-normed o [L, HV, V].
     state_precision: "bf16x3" (default; exact bf16 products of a 3-way split
     fp32 state on tensor cores, fp32 accumulate; needs bf16 q/k, else falls
     back to "ieee"), "ieee" (FMA), "tf32x3", "tf32" (timing only).
     output_gate [L, HV, V] (any row stride, head stride V) + norm_weight [V]:
-    the gated RMSNorm is applied in-kernel (P1-F1) and `out` holds the normed
+    the gated RMSNorm is applied in-kernel and `out` holds the normed
     output; otherwise `out` is un-normed and the caller norms it."""
     slots, hv, vdim, kdim = state.shape
     h = num_k_heads
@@ -932,8 +739,7 @@ def gdn_tree_verify(*, q, k, v, a, b, A_log, dt_bias, state, state_indices,
 
 
 def conv_tree_update(*, x, weight, bias, conv_state, state_indices, cu_seqlens,
-                     num_accepted, conv_src, out, activation=True, block_c=None,
-                     num_requests=None) -> None:
+                     num_accepted, conv_src, out, activation=True, num_requests=None) -> None:
     """x [L, C] (row stride any); weight [C, 4]; conv_state [slots, C,
     state_len] (any strides, stock spec layout); conv_src [R, >=T, 3] int32."""
     n = state_indices.size(0) if num_requests is None else num_requests
@@ -942,25 +748,17 @@ def conv_tree_update(*, x, weight, bias, conv_state, state_indices, cu_seqlens,
     dim = x.shape[1]
     assert x.stride(1) == 1 and out.stride(1) == 1 and weight.is_contiguous()
     assert conv_src.stride(2) == 1 and conv_src.stride(1) == 3
-    if block_c is None:  # reframe B: more CTAs for the latency-bound c=1 case
-        block_c = int(os.environ.get("ATDEV_TREE_CONV_BC", "128"))
     common = (x, x.stride(0), weight, bias if bias is not None else weight,
               conv_state, conv_state.stride(0), conv_state.stride(1), conv_state.stride(2),
               state_indices, state_indices.stride(0), cu_seqlens, num_accepted,
               conv_src, conv_src.stride(0), out, out.stride(0), dim)
     tp = conv_src.shape[1]
-    if os.environ.get("ATDEV_TREE_CONV_VEC", "1") == "1" and tp <= 32:
-        # conv_src has a row per node (N); every request's T <= N
-        bc = int(os.environ.get("ATDEV_TREE_CONV_VEC_BC", "32"))
-        _conv_tree_vec_kernel[(n, triton.cdiv(dim, bc))](
-            *common, HAS_BIAS=bias is not None, ACT=activation, BC=bc,
-            STATE_LEN=conv_state.shape[2], TP=triton.next_power_of_2(tp),
-            num_warps=4)
-        return
-    _conv_tree_kernel[(n, triton.cdiv(dim, block_c))](
-        *common, HAS_BIAS=bias is not None, ACT=activation, BC=block_c,
-        STATE_LEN=conv_state.shape[2], num_warps=max(1, min(4, block_c // 32)),
-    )
+    assert tp <= 32  # conv_src has a row per node (N); every request's T <= N
+    bc = 32
+    _conv_tree_vec_kernel[(n, triton.cdiv(dim, bc))](
+        *common, HAS_BIAS=bias is not None, ACT=activation, BC=bc,
+        STATE_LEN=conv_state.shape[2], TP=triton.next_power_of_2(tp),
+        num_warps=4)
 
 
 def tree_accept(parent, tokens, target_argmax, max_depth, out_cols=None,
@@ -991,21 +789,15 @@ def tree_accept(parent, tokens, target_argmax, max_depth, out_cols=None,
 
 
 def build_tree_gpu(scores, cand, rmap, rmap_stride, tok_out, meta_parent, meta_depth,
-                   meta_anc, meta_conv, num_nodes, chain=False, temperature=1.0,
-                   unary=None, mix=0.0, pw=1.0):
-    """scores [R, D, K, K] fp32 contiguous, cand [R, D, K] int64 contiguous.
-    unary [R, D, K] fp32 (E7 marginal mix, used when mix > 0 or pw != 1)."""
+                   meta_anc, meta_conv, num_nodes, chain=False, temperature=1.0):
+    """scores [R, D, K, K] fp32 contiguous, cand [R, D, K] int64 contiguous."""
     r, d, kc, _ = scores.shape
     assert scores.is_contiguous() and cand.is_contiguous()
     assert 2 <= num_nodes <= 63 and kc & (kc - 1) == 0
-    use_mix = unary is not None and (mix != 0.0 or pw != 1.0)
-    if use_mix:
-        assert unary.is_contiguous() and unary.dtype == torch.float32 and tuple(unary.shape) == (r, d, kc)
     _tree_build_kernel[(r,)](
         scores, cand, rmap, rmap_stride, tok_out, tok_out.stride(0),
         meta_parent, meta_depth, meta_anc, meta_conv, 1.0 / float(temperature),
-        unary if use_mix else scores, float(mix), float(pw),
-        N=num_nodes, NP=triton.next_power_of_2(num_nodes), K=kc, D=d, CHAIN=chain, MIX=use_mix,
+        N=num_nodes, NP=triton.next_power_of_2(num_nodes), K=kc, D=d, CHAIN=chain,
         num_warps=1,
     )
 

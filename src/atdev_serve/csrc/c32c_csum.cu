@@ -1,20 +1,16 @@
-// C32c consumer-sum: the residual add + Gemma RMSNorm -> s4 producer (c32_prod.cu norm_a4_kernel, one CTA
-// per padded row, same fp32 op sequence) reading its x input as the split-K slice partials of the producer
-// W4A4 GEMM instead of the GEMM's bf16 output. The MarlinA4 csum build (A4_PAR_REDUCE=7) stores every
-// slice's fp32 partial to P[slice][row][col] (slot stride 128 rows) and skips its lock chain and bf16
-// write; here x[row][c] = bf16(P[0] + P[1] + ... + P[cnt-1]) (slots added in slice order = the serial
-// chain's fp32 order, rounded like write_result) -> the GEMM-output part is bit-identical to the chain.
-// The norm itself is c32_prod's CUDA norm (rounding-level vs the Triton chunk kernel: rare fp32 ties).
+// Consumer-sum: the residual add + Gemma RMSNorm -> s4 producer (one CTA per padded row) reading its
+// x input as the split-K slice partials of the producer W4A4 GEMM instead of the GEMM's bf16 output.
+// The MarlinA4 csum build (A4_PAR_REDUCE=7) stores every slice's fp32 partial to P[slice][row][col]
+// (slot stride 128 rows) and skips its lock chain and bf16 write; here x[row][c] = bf16(P[0] + P[1] +
+// ... + P[cnt-1]) (slots added in slice order = the serial chain's fp32 order, rounded like
+// write_result) -> the GEMM-output part is bit-identical to the chain. The norm is rounding-level vs
+// fused_quant's Triton chunk kernel (rare fp32 ties). The s4 quotient is the branch-free form of
+// c32_prod.cu (bit-identical to div.rn).
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <cuda_bf16.h>
 #include <cstdint>
-
-// C32h-mk (MK=1, ATDEV_C32_MK=1): branch-free s4 quotient, bit-identical (see c32_prod.cu)
-#ifndef MK
-#define MK 0
-#endif
 
 namespace {
 
@@ -63,20 +59,14 @@ __device__ __forceinline__ void a4_pack8(const float (&y)[8], int s, int g, int 
                              0.142857149243354797363281250f);
   const int p = (s >> 1) & 1, a = s >> 2;
   uint32_t part[2] = {0u, 0u};
-#if MK
   const float rc = div_rn_ftz(1.0f, sc);
-#endif
 #pragma unroll
   for (int i = 0; i < 8; i++) {
-#if MK
     float q0, r, q1;
     asm("mul.rn.ftz.f32 %0, %1, %2;" : "=f"(q0) : "f"(y[i]), "f"(rc));
     asm("fma.rn.ftz.f32 %0, %1, %2, %3;" : "=f"(r) : "f"(-sc), "f"(q0), "f"(y[i]));
     asm("fma.rn.ftz.f32 %0, %1, %2, %3;" : "=f"(q1) : "f"(r), "f"(rc), "f"(q0));
     float q = rintf(q1);
-#else
-    float q = rintf(div_rn_ftz(y[i], sc));
-#endif
     q = fminf(fmaxf(q, -8.0f), 7.0f);
     const uint32_t nib = (uint32_t)((int)q) & 15u;
     part[i >> 2] |= nib << (8 * (i & 3) + 4 * p);

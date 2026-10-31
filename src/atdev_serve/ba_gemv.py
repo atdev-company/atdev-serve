@@ -1,9 +1,9 @@
-"""ba_gemv (P1-F1): the GDN layer's `in_proj_ba` 5120->96 bf16 GEMV as one
+"""ba_gemv: the GDN layer's `in_proj_ba` 5120->96 bf16 GEMV as one
 deterministic split-K Triton launch (ATDEV_OPT=ba_gemv).
 
 Why: cuBLAS runs this 1 MB GEMV as `ampere_s16816gemm` + `splitKreduce`
-(5.0 + 3.3 us at M=16, 5.2 + 3.3 us at M=64; docs/research/P1-fusion.md
-section 1.2), i.e. two latency-bound launches per GDN layer, 48 per step. Here
+(5.0 + 3.3 us at M=16, 5.2 + 3.3 us at M=64), i.e. two latency-bound
+launches per GDN layer, 48 per step. Here
 grid (N/16, SPLIT_K) programs each compute a [M, 16] fp32 partial over K/SPLIT_K
 on tensor cores, write it to a workspace and take a ticket; the last arriver of
 a column block sums the SPLIT_K partials in fixed order (k-slice 0..S-1), writes
@@ -15,7 +15,6 @@ Active for decode-sized M (<= 64); larger M (prefill) stays on F.linear.
 from __future__ import annotations
 
 import logging
-import os
 
 import torch
 
@@ -29,8 +28,7 @@ OPT_NAME = "ba_gemv"
 SUPPORTED_VLLM_VERSION = "0.31.0"
 MAX_M = 64
 BN = 16
-# (split_k, block_k, num_warps); ATDEV_BA_CFG="s,bk,w" overrides (scripts/bench_p1_fusion.py sweep)
-_CFG = tuple(int(v) for v in os.environ.get("ATDEV_BA_CFG", "8,128,4").split(","))
+_CFG = (8, 128, 4)  # (split_k, block_k, num_warps)
 SPLIT_MAX = 32
 log = logging.getLogger("atdev_serve")
 
@@ -82,9 +80,9 @@ def _bufs(dev: torch.device, n: int):
     return b
 
 
-def ba_gemv(x: torch.Tensor, w: torch.Tensor, cfg=None) -> torch.Tensor:
+def ba_gemv(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
     """x [M, K] bf16, w [N, K] bf16 -> [M, N] bf16 (= F.linear(x, w))."""
-    split, bk, warps = cfg or _CFG
+    split, bk, warps = _CFG
     m, k = x.shape
     n = w.shape[0]
     if (m == 0 or m > MAX_M or n % BN or k % (split * bk) or split > SPLIT_MAX

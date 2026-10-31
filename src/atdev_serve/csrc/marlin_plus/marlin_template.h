@@ -1514,7 +1514,7 @@ __device__ __forceinline__ void MarlinBody(
   };
 
 #if defined(MP_OVLCHAIN) && MP_OVLCHAIN
-  // P3 overlapped split-K chain (bit-exact to the serial lock chain): non-last slices store their own
+  // overlapped split-K chain (bit-exact to the serial lock chain): non-last slices store their own
   // fp32 partial to slot (locks_off, slice_idx) and arrive without waiting; the last slice waits once
   // for slice_count-1 arrivals and sums t = p0; t += p1; ...; frag_c += t, which is exactly the serial
   // chain's p_{n-1} + (... + (p1 + p0)) (fp32 add is commutative). Slots: MP_OVL_MAXS per lock.
@@ -2032,7 +2032,7 @@ __global__ void Marlin(MARLIN_KERNEL_PARAMS) {
                                A_src, lda_src, grid_bar, a_gscale_ptr);
 }
 
-// P1 stage 2: a chain of dependent GEMMs in one persistent launch. Job j+1's A
+// a chain of dependent GEMMs in one persistent launch. Job j+1's A
 // may be job j's C; a grid barrier separates the jobs, and the launch /
 // pipeline fill / drain between the GEMMs is gone. All jobs share one tile
 // config (template) and the same M.

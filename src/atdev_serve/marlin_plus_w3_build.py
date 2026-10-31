@@ -1,5 +1,5 @@
 """Build the marlin_plus W3 extension: vLLM's Marlin W4A16 kernel with a 3-bit planar weight
-stream (bet #2, docs/research/bet2-w3.md).
+stream (used by w3_mixed for the 3-bit layers outside the c1_fuse fused epilogues).
 
 The kernel source `csrc/marlin_plus_w3/gen/marlin_template_w3.h` is *generated* here from
 `csrc/marlin_plus/marlin_template.h` by a handful of anchored text patches (asserted to match
@@ -15,6 +15,7 @@ byte-for-byte vLLM's; only the B stream changes:
     ~12 ALU ops, so the stock lop3 uint4b8 dequant, mma and everything downstream are unchanged.
     With the same (thread_k, thread_n, threads) as stock Marlin the output is bit-identical to
     stock Marlin W4A16 running the same 3-bit-valued weights (same reduction order).
+  * PATCHES_FASTDQ: the three plane words feed a 3-bit dequant directly (see below).
 """
 from __future__ import annotations
 
@@ -130,7 +131,7 @@ PATCHES = [
 ]
 
 
-# W3_FASTDQ=1: the three plane words are consumed *directly* by a 3-bit dequant (mask 0x00070007 drops
+# FASTDQ: the three plane words are consumed *directly* by a 3-bit dequant (mask 0x00070007 drops
 # the plane bit, bias 4 instead of 8), so only tile 3 needs reconstruction (3 SHF + 2 LOP3) and the
 # per-nibble "+4" adds disappear.
 PATCHES_FASTDQ = [
@@ -162,13 +163,9 @@ PATCHES_FASTDQ = [
 ]
 
 
-def fastdq() -> bool:
-    return "W3_FASTDQ=1" in os.environ.get("ATDEV_W3_DEFINES", "")
-
-
 def generate_template() -> str:
     src = open(os.path.join(MP_CSRC, "marlin_template.h")).read()
-    for old, new in PATCHES + (PATCHES_FASTDQ if fastdq() else []):
+    for old, new in PATCHES + PATCHES_FASTDQ:
         n = src.count(old)
         assert n == 1, f"W3 patch anchor matched {n} times:\n{old[:120]}"
         src = src.replace(old, new)
@@ -189,10 +186,6 @@ EXTRA = [(128, 256, 256), (256, 64, 128), (256, 128, 256)]
 
 def instantiations() -> list[tuple]:
     out = set()
-    sel = os.environ.get("ATDEV_W3_SET", "full")
-    if sel == "dev":
-        return [(1, 0, 128, 128, 256, 4), (1, 1, 128, 128, 256, 4), (1, 0, 128, 64, 128, 4),
-                (2, 0, 64, 256, 256, 4), (4, 0, 64, 256, 256, 4)]
     for c, st in itertools.product(STOCK_SMALL + EXTRA + [(64, 256, 256)], (4, 6, 8)):
         out.add((1, 1) + c + (st,))
         out.add((1, 0) + c + (st,))
@@ -285,7 +278,6 @@ def load(verbose: bool = False):
     for p in srcs:
         h.update(open(p, "rb").read())
     h.update(open(__file__, "rb").read())
-    h.update(os.environ.get("ATDEV_W3_DEFINES", "").encode())
     h.update(generate_template().encode())
     name = "atdev_marlin_plus_w3_" + h.hexdigest()[:10]
     os.environ.setdefault("MAX_JOBS", "20")
@@ -296,8 +288,6 @@ def load(verbose: bool = False):
         extra_cflags=["-O3", "-std=c++17", "-DMARLIN_NAMESPACE_NAME=marlin_plus_w3"],
         extra_cuda_cflags=["-O3", "-std=c++17", "-DMARLIN_NAMESPACE_NAME=marlin_plus_w3",
                            "-DMP_FOLD=1", "-DMP_PURE_ASM=0",
-                           # P3: overlapped bit-exact split-K chain (marlin_template.h MP_OVLCHAIN)
-                           *(["-DMP_OVLCHAIN=1"] if "MP_OVLCHAIN=1" in os.environ.get("ATDEV_W3_DEFINES", "") else []),
                            "-gencode=arch=compute_80,code=sm_80", "--expt-relaxed-constexpr",
                            "-static-global-template-stub=false",
                            "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",

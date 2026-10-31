@@ -1,14 +1,14 @@
 # Benchmarks
 
 All numbers: Qwen3.8-27B, **1x NVIDIA A100 80GB (SXM, sm_80)**, vLLM 0.31.0 (pip wheel, unmodified),
-**greedy decoding** (temperature 0). The raw values behind every table and chart are in
-[`results.json`](results.json). Run `python tools/make_charts.py` to redraw the charts.
+**greedy decoding** (temperature 0).
 
 ## Workload and metrics
 
-* **Prompts**: `bench/prompts96.jsonl`, 96 fixed chat prompts (coding, agentic, general, math; 39 in
-  Korean). They are sent with the model's default chat template, `max_tokens=1024`, streaming
-  (`bench/client.py`). A warm-up batch runs before every measured run.
+* **Prompts**: 96 fixed chat prompts (coding, agentic, general, math; 39 in Korean). They are sent
+  through the OpenAI-compatible `/v1/chat/completions` endpoint with the model's default chat
+  template, `max_tokens=1024`, `temperature=0`, streaming. A warm-up batch runs before every
+  measured run.
 * **c=1 (1 client)**: a single user, one request at a time. Per-request decode speed =
   (completion tokens - 1) / (time of last token - time of first token). The headline is the **mean
   over the 96 prompts**, averaged over 2 repetitions. The median is reported too.
@@ -60,8 +60,8 @@ kernel-selection mode that ships.
 
 Notes on the ladder:
 
-* Rungs 1-2 run vLLM with **no flags** except the port and the served model name
-  (`bench/serve_vllm_default.sh`), so they also use vLLM's default context length. They were measured
+* Rungs 1-2 run vLLM with **no flags** except the port and the served model name, so they also
+  use vLLM's default context length. They were measured
   with the same client and prompts, in a separate session from rungs 3-5. The bf16 model needs about
   73 GB of GPU memory.
 * Rung 2 -> 3 is what a careful vLLM user can get from built-in options alone. Rung 3 is the
@@ -71,8 +71,8 @@ Notes on the ladder:
   approximations that are used **only to select** speculative candidates (an int4 shadow `lm_head`
   and a frequency-ordered 64k draft vocabulary). The engine builds these at load time and every
   accepted token is verified exactly.
-* Rungs 1-3 are launched by `bench/serve_vllm_default.sh` / `serve_vllm_c1.sh` / `serve_vllm_c32.sh`
-  and rung 5 by `serve_c1.sh` / `serve_c32.sh`. This release ships no launch script for rung 4
+* Rungs 1-3 are plain `vllm serve` commands (see [Baseline launch commands](#baseline-launch-commands))
+  and rung 5 is `serve_c1.sh` / `serve_c32.sh`. This release ships no launch script for rung 4
   (engine only).
 * Rung 5 also includes model-side changes. c=1: the 3-bit W3 overlay, the re-trained W4A16 block-16
   drafter, and an int8 + int4 split verify head. c=32: W4A4 activations on the large verify GEMMs, an
@@ -93,10 +93,9 @@ Notes on the ladder:
 | atdev full stack, c=1 | 0.967 | 0.9500 | 36/36 |
 | atdev full stack, c=32 | | 0.9401 | 36/36 |
 
-* GSM8K: greedy, thinking disabled, answer from `\boxed{}` (`bench/acc_gsm8k.py`). GSM8K-300 has a
+* GSM8K: greedy, thinking disabled, answer from `\boxed{}`. GSM8K-300 has a
   resolution of about 1 point at n=300, so GSM8K-1319 is the tie-breaker.
 * Long-context: passkey and multi-key retrieval in haystacks of GSM8K questions, 2k-6.5k tokens
-  (`bench/acc_longctx.py`).
 * Pass rule used during development: GSM8K within 1 point of the stock reference, long-context 36/36.
 
 ## How the baselines were chosen
@@ -136,19 +135,34 @@ datasets only, which is why the release bars (408.9 and 1.554x) are slightly low
 The earliest c=32 engine-only ratios were measured against a same-session baseline of 1749-1751
 tok/s. The later ratios use 1757.1.
 
-## Reproduce
+## Baseline launch commands
+
+The best-vLLM baselines (rung 3) are stock vLLM 0.31.0 without the plugin (`ATDEV_OPT` unset):
 
 ```bash
-pip install ".[bench]"
-bench/run_bench.sh vllm_c1  results/vllm_c1      # c=1: 1 client
-bench/run_bench.sh c1       results/atdev_c1
-python bench/paired_c1.py results/vllm_c1 results/atdev_c1
-bench/run_bench.sh vllm_c32 results/vllm_c32     # c=32: 32 concurrent clients
-bench/run_bench.sh c32      results/atdev_c32
-MODEL=Qwen/Qwen3.8-27B bench/run_bench.sh default_c1 results/bf16_default_c1
-bench/run_bench.sh default_c32 results/int4_default_c32
-ACC=1 ACC_N=1319 LONGCTX=1 bench/run_bench.sh c1 results/atdev_c1_gate
+# c=1 (1 client)
+vllm serve RedHatAI/Qwen3.8-27B-INT4 --port 8100 --served-model-name m \
+  --max-model-len 8192 --kv-cache-dtype bfloat16 --language-model-only --gpu-memory-utilization 0.90 \
+  --mamba-ssm-cache-dtype bfloat16 \
+  --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2","num_speculative_tokens":7,"quantization":"fp8"}'
+
+# c=32 (32 concurrent clients)
+VLLM_MARLIN_INPUT_DTYPE=int8 vllm serve RedHatAI/Qwen3.8-27B-INT4 --port 8100 --served-model-name m \
+  --max-model-len 8192 --kv-cache-dtype bfloat16 --language-model-only --gpu-memory-utilization 0.90 \
+  --mamba-ssm-cache-dtype bfloat16 --attention-backend TRITON_ATTN --no-enable-prefix-caching \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
 ```
+
+Rungs 1-2: `vllm serve Qwen/Qwen3.8-27B` (bf16) or `vllm serve RedHatAI/Qwen3.8-27B-INT4` with only
+`--port` and `--served-model-name`.
+
+## Measuring on your machine
+
+This repository contains only what is needed to serve the two stacks; the benchmark harness used
+for the tables above is not included. To compare on your own hardware, start the baseline and
+`serve_c1.sh` / `serve_c32.sh` one after the other on the same idle GPU and send the same prompts
+to both with any streaming OpenAI-compatible client, using the metrics defined in
+[Workload and metrics](#workload-and-metrics). Discard the first requests after a start (warm-up).
 
 Expect small differences between sessions, typically within about 1%. Other GPUs of the same model
 can differ by a few percent (clocks, HBM). Always compare atdev and the baseline in the same session.

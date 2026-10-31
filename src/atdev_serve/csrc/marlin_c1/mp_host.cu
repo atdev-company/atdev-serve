@@ -1,12 +1,10 @@
-// marlin_plus host side: vLLM 0.31 Marlin (copied, Apache-2.0) with the
-// launch configuration exposed, so every (thread_k, thread_n, threads,
-// stages, blocks_per_sm, max_m_blocks) can be chosen per shape at runtime.
+// marlin_c1 host side: the marlin_plus launch logic (vLLM 0.31 Marlin, copied, Apache-2.0, with the
+// launch configuration exposed) plus the fused-epilogue entry point mp_gemm_epi.
 //
-// The kernel instantiations live in generated mp_kernels_*.cu files and the
-// selector in mp_selector.h (see atdev_serve/marlin_plus.py::generate()).
-// Weight/scale layouts are exactly vLLM's (gptq_marlin_repack +
-// marlin_permute_scales [+ marlin_act_int8_process_scales]), so this module
-// reuses the tensors vLLM already holds: no extra weight memory.
+// The kernel instantiations live in generated mp_kernels_*.cu files and the selector in
+// mp_selector.h (written by atdev_serve/marlin_c1_build.py). Weight/scale layouts are exactly
+// vLLM's (gptq_marlin_repack + marlin_permute_scales), so this module reuses the tensors vLLM
+// already holds: no extra weight memory.
 
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -216,18 +214,9 @@ static torch::Tensor mp_gemm_impl(const MpEpi& epi, torch::Tensor a, torch::Tens
       TORCH_CHECK(occ >= ch_bps, "marlin_plus: invalid config (occupancy ", occ,
                   " < blocks_per_sm ", ch_bps, ")");
     }
-    // vLLM rule: atomic-add reduction only for small outputs. ATDEV_MP_FORCE_ATOMIC=1
-    // (A2 experiment) lifts the size limit to test whether the serial split-K
-    // reduction chain is the fixed per-call overhead.
-    static const bool force_atomic = getenv("ATDEV_MP_FORCE_ATOMIC") != nullptr;
-    bool part_atomic = use_atomic_add && (force_atomic || mp::div_ceil(m_split, 64) * prob_n <= 2048);
-    // P3 microbench: ATDEV_MP_GRID=<n> launches n (<= sms*bps) persistent CTAs instead of sms*bps
-    // (fewer stripes per column -> shorter serial split-K chain). Not used in serving.
+    // vLLM rule: atomic-add reduction only for small outputs
+    bool part_atomic = use_atomic_add && mp::div_ceil(m_split, 64) * prob_n <= 2048;
     int grid = sms * ch_bps;
-    if (const char* ge = getenv("ATDEV_MP_GRID")) {
-      int gv = atoi(ge);
-      if (gv > 0 && gv < grid) grid = gv;
-    }
     kern<<<grid, c.threads, smem, stream>>>(
         A_ptr, B_ptr, C_ptr, C_tmp_ptr, nullptr, a_s_ptr, s_ptr, nullptr,
         nullptr, m_split, prob_n, prob_k, lda, locks_ptr, false, part_atomic,
@@ -241,21 +230,7 @@ static torch::Tensor mp_gemm_impl(const MpEpi& epi, torch::Tensor a, torch::Tens
   return out;
 }
 
-torch::Tensor mp_gemm(torch::Tensor a, torch::Tensor b_q, torch::Tensor b_s,
-                      c10::optional<torch::Tensor> a_s_opt, torch::Tensor out,
-                      torch::Tensor locks, torch::Tensor c_tmp, int64_t size_n,
-                      int64_t size_k, std::vector<int64_t> cfg,
-                      bool use_fp32_reduce, bool use_atomic_add,
-                      c10::optional<torch::Tensor> fq_gscale,
-                      c10::optional<torch::Tensor> fq_aq,
-                      c10::optional<torch::Tensor> fq_as,
-                      c10::optional<torch::Tensor> fq_bar) {
-  MpEpi epi{};
-  return mp_gemm_impl(epi, a, b_q, b_s, a_s_opt, out, locks, c_tmp, size_n, size_k, cfg, use_fp32_reduce,
-                      use_atomic_add, fq_gscale, fq_aq, fq_as, fq_bar);
-}
-
-// E6 fused epilogues (bf16 W4A16, M <= 16, one m-split). mode 1: R [M, N] bf16 residual in, W [N] bf16 Gemma
+// Fused epilogues (bf16 W4A16, M <= 16, one m-split). mode 1: R [M, N] bf16 residual in, W [N] bf16 Gemma
 // weight, C2 [M, N] bf16 residual out, P [16 * T] fp32 partials out (T = N / thread_n); out = bf16(x * (1 + W)).
 // mode 2/3: Pin [16 * T_in] partials of the producer, n_norm = producer N (the norm width); mode 3 out [M, N / 2].
 torch::Tensor mp_gemm_epi(torch::Tensor a, torch::Tensor b_q, torch::Tensor b_s, torch::Tensor out,
@@ -302,16 +277,10 @@ torch::Tensor mp_gemm_epi(torch::Tensor a, torch::Tensor b_q, torch::Tensor b_s,
 std::vector<std::vector<int64_t>> mp_instantiated();
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("gemm_epi", &mp_gemm_epi, "marlin_c1 gemm with E6 epilogue", py::arg("a"), py::arg("b_q"),
+  m.def("gemm_epi", &mp_gemm_epi, "marlin_c1 gemm with fused epilogue", py::arg("a"), py::arg("b_q"),
         py::arg("b_s"), py::arg("out"), py::arg("locks"), py::arg("c_tmp"), py::arg("size_n"),
         py::arg("size_k"), py::arg("cfg"), py::arg("mode"), py::arg("R") = py::none(), py::arg("W") = py::none(),
         py::arg("C2") = py::none(), py::arg("P") = py::none(), py::arg("Pin") = py::none(),
         py::arg("T_in") = 0, py::arg("n_norm") = 0, py::arg("eps") = 1e-6, py::arg("Rout") = py::none());
-  m.def("gemm", &mp_gemm, "marlin_plus gemm", py::arg("a"), py::arg("b_q"),
-        py::arg("b_s"), py::arg("a_s"), py::arg("out"), py::arg("locks"),
-        py::arg("c_tmp"), py::arg("size_n"), py::arg("size_k"), py::arg("cfg"),
-        py::arg("use_fp32_reduce") = true, py::arg("use_atomic_add") = false,
-        py::arg("fq_gscale") = py::none(), py::arg("fq_aq") = py::none(),
-        py::arg("fq_as") = py::none(), py::arg("fq_bar") = py::none());
   m.def("instantiated", &mp_instantiated, "instantiated kernel configs");
 }

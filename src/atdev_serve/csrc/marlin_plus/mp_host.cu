@@ -3,7 +3,7 @@
 // stages, blocks_per_sm, max_m_blocks) can be chosen per shape at runtime.
 //
 // The kernel instantiations live in generated mp_kernels_*.cu files and the
-// selector in mp_selector.h (see atdev_serve/marlin_plus.py::generate()).
+// selector in mp_selector.h (see atdev_serve/marlin_plus_build.py::generate()).
 // Weight/scale layouts are exactly vLLM's (gptq_marlin_repack +
 // marlin_permute_scales [+ marlin_act_int8_process_scales]), so this module
 // reuses the tensors vLLM already holds: no extra weight memory.
@@ -212,18 +212,9 @@ torch::Tensor mp_gemm(torch::Tensor a, torch::Tensor b_q, torch::Tensor b_s,
       TORCH_CHECK(occ >= ch_bps, "marlin_plus: invalid config (occupancy ", occ,
                   " < blocks_per_sm ", ch_bps, ")");
     }
-    // vLLM rule: atomic-add reduction only for small outputs. ATDEV_MP_FORCE_ATOMIC=1
-    // (A2 experiment) lifts the size limit to test whether the serial split-K
-    // reduction chain is the fixed per-call overhead.
-    static const bool force_atomic = getenv("ATDEV_MP_FORCE_ATOMIC") != nullptr;
-    bool part_atomic = use_atomic_add && (force_atomic || mp::div_ceil(m_split, 64) * prob_n <= 2048);
-    // P3 microbench: ATDEV_MP_GRID=<n> launches n (<= sms*bps) persistent CTAs instead of sms*bps
-    // (fewer stripes per column -> shorter serial split-K chain). Not used in serving.
+    // vLLM rule: atomic-add reduction only for small outputs
+    bool part_atomic = use_atomic_add && mp::div_ceil(m_split, 64) * prob_n <= 2048;
     int grid = sms * ch_bps;
-    if (const char* ge = getenv("ATDEV_MP_GRID")) {
-      int gv = atoi(ge);
-      if (gv > 0 && gv < grid) grid = gv;
-    }
     kern<<<grid, c.threads, smem, stream>>>(
         A_ptr, B_ptr, C_ptr, C_tmp_ptr, nullptr, a_s_ptr, s_ptr, nullptr,
         nullptr, m_split, prob_n, prob_k, lda, locks_ptr, false, part_atomic,
@@ -237,124 +228,9 @@ torch::Tensor mp_gemm(torch::Tensor a, torch::Tensor b_q, torch::Tensor b_s,
   return out;
 }
 
-namespace MARLIN_NAMESPACE_NAME {
-using ChainFuncPtr = void (*)(MpJobs, int, int4*, int*, int*, bool, int);
-__global__ void MarlinChainDefault(MpJobs, int, int4*, int*, int*, bool, int) {}
-
-static ChainFuncPtr get_chain_kernel(const vllm::ScalarType a_type, int thread_m_blocks,
-                                     int thread_n_blocks, int thread_k_blocks,
-                                     bool m_block_size_8, int threads, int stages) {
-  auto kernel = MarlinChainDefault;
-#include "mp_chain_selector.h"
-  return kernel;
-}
-}  // namespace MARLIN_NAMESPACE_NAME
-
-// P1 stage 2: njobs (<= MP_MAX_CHAIN) GEMMs in one persistent launch with a grid
-// barrier between them. All jobs: same M (<= 16*max_tmb, one m-chunk), same
-// dtype path (bf16 or int8 with a_s given), group 128. cfg = {thread_k,
-// thread_n, threads, stages}.
-// types[j]: 0 GEMM, 1 norm (a = h, b_q = residual in or 0-size, b_s = weight bf16 [k],
-// out = x, aux[j] = residual out), 2 silu (a = gate_up [m, 2n], out [m, n]).
-void mp_gemm_chain(std::vector<torch::Tensor> a, std::vector<torch::Tensor> b_q,
-                   std::vector<torch::Tensor> b_s, std::vector<torch::Tensor> out,
-                   std::vector<int64_t> size_n, std::vector<int64_t> size_k,
-                   c10::optional<std::vector<torch::Tensor>> a_s_opt, torch::Tensor locks,
-                   torch::Tensor c_tmp, torch::Tensor bar, std::vector<int64_t> cfg,
-                   bool use_fp32_reduce, std::vector<int64_t> types,
-                   c10::optional<std::vector<torch::Tensor>> aux_opt, double eps) {
-  const int nj = a.size();
-  TORCH_CHECK(nj >= 1 && nj <= MP_MAX_CHAIN && cfg.size() == 4);
-  TORCH_CHECK(b_q.size() == nj && b_s.size() == nj && out.size() == nj &&
-              size_n.size() == nj && size_k.size() == nj);
-  if (types.empty()) types.assign(nj, 0);
-  TORCH_CHECK(types.size() == nj);
-  int g0 = -1;
-  for (int j = 0; j < nj; j++) if (types[j] == 0 && g0 < 0) g0 = j;
-  const int prob_m = a[0].size(0);
-  const bool a8 = g0 >= 0 && a[g0].scalar_type() == at::kChar;
-  if (a8) TORCH_CHECK(a_s_opt.has_value() && a_s_opt.value().size() == nj);
-  const int dev = a[0].get_device();
-  const at::cuda::OptionalCUDAGuard guard(a[0].device());
-  cudaStream_t stream = at::cuda::getCurrentCUDAStream(dev);
-  int sms = 0, max_smem = 0;
-  cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
-  cudaDeviceGetAttribute(&max_smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
-  int thread_k = cfg[0], thread_n = cfg[1], threads = cfg[2], stages = cfg[3];
-  int tmb = std::min(mp::div_ceil(prob_m, 16), 4);
-  TORCH_CHECK(prob_m <= tmb * 16, "mp chain: M must fit one m-chunk");
-  bool m8 = prob_m <= 8 && !a8;
-  vllm::ScalarType at = a8 ? vllm::kS8 : vllm::kBFloat16;
-  mp::MpJobs jobs{};
-  for (int j = 0; j < nj; j++) {
-    mp::MpJob& jb = jobs.j[j];
-    jb.type = types[j];
-    TORCH_CHECK(a[j].size(0) == prob_m && a[j].stride(1) == 1);
-    TORCH_CHECK(out[j].size(0) == prob_m && out[j].size(1) == size_n[j] && out[j].is_contiguous());
-    jb.A = (const int4*)a[j].data_ptr();
-    jb.C = (int4*)out[j].data_ptr();
-    jb.m = prob_m; jb.n = size_n[j]; jb.k = size_k[j];
-    jb.lda = a[j].stride(0);
-    jb.B = nullptr; jb.s = nullptr; jb.a_s = nullptr; jb.aux = nullptr; jb.w = nullptr;
-    jb.eps = (float)eps;
-    if (jb.type == 0) {
-      TORCH_CHECK(a[j].size(1) == size_k[j] && a[j].scalar_type() == (a8 ? at::kChar : at::kBFloat16));
-      TORCH_CHECK(b_s[j].size(0) * 128 == size_k[j], "mp chain: group 128 only");
-      TORCH_CHECK(size_k[j] % thread_k == 0 && size_n[j] % thread_n == 0);
-      TORCH_CHECK(a[j].stride(0) % (a8 ? 16 : 8) == 0);
-      jb.B = (const int4*)b_q[j].data_ptr();
-      jb.s = (const int4*)b_s[j].data_ptr();
-      jb.a_s = a8 ? a_s_opt.value()[j].data_ptr<float>() : nullptr;
-    } else if (jb.type == 1) {
-      TORCH_CHECK(a[j].scalar_type() == at::kBFloat16 && a[j].size(1) == size_k[j] &&
-                  size_n[j] == size_k[j] && size_k[j] % 8 == 0 && a[j].stride(0) % 8 == 0);
-      TORCH_CHECK(b_s[j].numel() == size_k[j] && b_s[j].scalar_type() == at::kBFloat16);
-      if (b_q[j].numel() > 0) {
-        TORCH_CHECK(b_q[j].is_contiguous() && b_q[j].sizes() == out[j].sizes());
-        jb.B = (const int4*)b_q[j].data_ptr();
-        TORCH_CHECK(aux_opt.has_value() && aux_opt.value()[j].is_contiguous() &&
-                    aux_opt.value()[j].sizes() == out[j].sizes());
-        jb.aux = (int4*)aux_opt.value()[j].data_ptr();
-      }
-      jb.w = b_s[j].data_ptr();
-    } else if (jb.type == 2) {
-      TORCH_CHECK(a[j].scalar_type() == at::kBFloat16 && a[j].size(1) >= 2 * size_n[j] &&
-                  size_n[j] % 8 == 0 && a[j].stride(0) % 8 == 0);
-    } else {
-      TORCH_CHECK(false, "mp chain: unknown job type");
-    }
-  }
-  auto kern = mp::get_chain_kernel(at, tmb, thread_n / 16, thread_k / 16, m8, threads, stages);
-  TORCH_CHECK(kern != mp::MarlinChainDefault, "mp chain: kernel not instantiated: tmb=", tmb,
-              " m8=", m8, " k=", thread_k, " n=", thread_n, " thr=", threads, " st=", stages,
-              " a8=", a8);
-  // shared memory: the largest job's requirement (cache_size depends only on the tile)
-  mp::TCfg c{thread_k, thread_n, threads};
-  // same dynamic smem as mp_gemm (stock marlin_plus launch) so the kernel sees
-  // the same L1/smem split and sh_* layout
-  cudaFuncAttributes fa;
-  cudaFuncGetAttributes(&fa, kern);
-  int smem = max_smem - (int)fa.sharedSizeBytes - 512;
-  if (g0 >= 0)
-    TORCH_CHECK(mp::valid(c, tmb, size_k[g0], size_n[g0], 128, a8, stages, smem),
-                "mp chain: invalid config");
-  cudaFuncSetAttribute(kern, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-  int occ = 0;
-  cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ, kern, threads, smem);
-  TORCH_CHECK(occ >= 1, "mp chain: kernel does not fit one CTA/SM");
-  kern<<<sms, threads, smem, stream>>>(jobs, nj, (int4*)c_tmp.data_ptr(), locks.data_ptr<int>(),
-                                       bar.data_ptr<int>(), use_fp32_reduce, smem);
-}
-
 std::vector<std::vector<int64_t>> mp_instantiated();
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("gemm_chain", &mp_gemm_chain, "marlin_plus chained gemms (one launch)", py::arg("a"),
-        py::arg("b_q"), py::arg("b_s"), py::arg("out"), py::arg("size_n"), py::arg("size_k"),
-        py::arg("a_s") = py::none(), py::arg("locks"), py::arg("c_tmp"), py::arg("bar"),
-        py::arg("cfg"), py::arg("use_fp32_reduce") = true,
-        py::arg("types") = std::vector<int64_t>(), py::arg("aux") = py::none(),
-        py::arg("eps") = 1e-6);
   m.def("gemm", &mp_gemm, "marlin_plus gemm", py::arg("a"), py::arg("b_q"),
         py::arg("b_s"), py::arg("a_s"), py::arg("out"), py::arg("locks"),
         py::arg("c_tmp"), py::arg("size_n"), py::arg("size_k"), py::arg("cfg"),

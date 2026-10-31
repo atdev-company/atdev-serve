@@ -1,48 +1,31 @@
-"""LL5 (ATDEV_OPT=ll5_fuse): remaining bit-identical c=1 glue items (LEDGER LL5-*), each opt-in:
+"""ll5_fuse (ATDEV_OPT=ll5_fuse): remaining bit-identical c=1 glue items:
 
-  ATDEV_LL5_CN=1   DFlash2 drafter: DFlashGroupedConv.finish (vLLM Triton grouped conv, 10 launches / step) fused
-                   into the Inductor add + RMSNorm kernel that follows it. Replaces DFlash2 model forward with the
-                   same module calls, except per layer
-                     attention_conv.finish + post_attention_layernorm      -> op atdev_ll5_cna
-                     mlp_conv.finish + next input_layernorm (final norm)   -> op atdev_ll5_cnb
-                   The Triton kernels below are the Inductor kernels of the stock compiled drafter (pinned configs:
-                   _0 XBLOCK 1 / R0_BLOCK 4096 / 16 warps, _2 and the final norm R0_BLOCK 2048 / 16 warps; sources in
-                   results/LL5/ref) with the conv value computed in-register by the conv kernel's expressions and
-                   rounded to bf16 where the stock chain stores it. Inductor keeps the residual of the post-attention
-                   norm unrounded (fp32 conv_attn + residual) inside the next kernel, so op A returns the bf16 conv
-                   output and op B re-forms the same fp32 sum.
-  ATDEV_LL5_OVL=1  next-step target prep overlapped with the drafter graph: the part of GPUModelRunner.prepare_inputs
-                   before combine_sampled_and_draft_tokens (idx_mapping / cu_num_logits / query_start_loc HtoD,
-                   expand_idx_mapping, prepare_pos_seq_lens) runs on a side stream that waits on an event recorded
-                   right before the DFlash query graph replay (i.e. after prepare_dflash_inputs, the last reader of
-                   the target positions / query_start_loc of the previous step); the main stream joins it before
-                   combine_sampled_and_draft_tokens (the first op that needs the drafts). Same kernels, same inputs.
-                   Decode-only steps without new requests (no staged req-state writes), no LoRA / PCP / adaptive
-                   verification. Side-stream tensors of the InputBatch get record_stream(main).
-                   =2: also the target KV groups' gather_block_tables / compute_slot_mappings on the side stream
-                   (steps without block-table updates; the drafter groups must be the last groups): the drafter
-                   groups' block-table gather stays on main (after the drafter graph that reads those rows), their
-                   slot-mapping rows are skipped (dead: prepare_dflash_inputs rewrites the whole row before any
-                   reader), main joins the side stream right after compute_slot_mappings (before tree_pos shifts the
-                   positions the slot kernel reads).
-  ATDEV_LL5_TAIL=1 LL1-tail (needs ATDEV_LL1_TAIL=1) with the final torch.topk(sorted) emulation in registers
-                   (csrc/ll5_tail.cu: ballot ranks for the sbtopk gather order + the same bitonic network on shuffles
-                   instead of a serial lane-0 gather and shared-memory swaps).
-  ATDEV_LL5_TREE=1 gdn_tree.build_tree_gpu (N = 16 nodes, K = 16, no chain / mix) as a CUDA kernel (csrc/ll5_tree.cu)
-                   with the Triton kernel's arithmetic (ex2.approx, libdevice logf, fma contraction, butterfly sums,
-                   tie-left argmax); each node's lattice row is normalised once instead of every iteration.
-  ATDEV_LL5_DG=1   drop a dead gather in GPUModelRunner.sample_tokens: set_draft_tokens(input_batch,
-                   req_states.draft_tokens[idx_mapping]) only reads the gathered tensor's shape unless the batch has
-                   structured-output requests -> pass the view req_states.draft_tokens[:num_reqs] then (same shape;
-                   -2 eager kernels in e2). Source-level patch of sample_tokens (one expression), checked verbatim.
-  ATDEV_LL5_GAPS=n diagnostic (no profiler): CUDA events around every CUDAGraph.replay; every n steps log the median
-                   T graph, D graph, e1 (T end -> D start) and e2 (D end -> next T start) GPU times.
+  cn   DFlash2 drafter: DFlashGroupedConv.finish (vLLM Triton grouped conv, 10 launches / step) fused into the
+       Inductor add + RMSNorm kernel that follows it. Replaces DFlash2 model forward with the same module calls,
+       except per layer
+         attention_conv.finish + post_attention_layernorm      -> op atdev_ll5_cna
+         mlp_conv.finish + next input_layernorm (final norm)   -> op atdev_ll5_cnb
+       The Triton kernels below are the Inductor kernels of the stock compiled drafter (pinned configs: _0 XBLOCK 1
+       / R0_BLOCK 4096 / 16 warps, _2 and the final norm R0_BLOCK 2048 / 16 warps) with the conv value computed
+       in-register by the conv kernel's expressions and rounded to bf16 where the stock chain stores it. Inductor
+       keeps the residual of the post-attention norm unrounded (fp32 conv_attn + residual) inside the next kernel,
+       so op A returns the bf16 conv output and op B re-forms the same fp32 sum.
+  ovl  next-step target prep overlapped with the drafter graph: the part of GPUModelRunner.prepare_inputs before
+       combine_sampled_and_draft_tokens (idx_mapping / cu_num_logits / query_start_loc HtoD, expand_idx_mapping,
+       prepare_pos_seq_lens) runs on a side stream that waits on an event recorded right before the DFlash query
+       graph replay (i.e. after prepare_dflash_inputs, the last reader of the target positions / query_start_loc of
+       the previous step); the main stream joins it before combine_sampled_and_draft_tokens (the first op that needs
+       the drafts). Same kernels, same inputs. Decode-only steps without new requests (no staged req-state writes),
+       no LoRA / PCP / adaptive verification. Side-stream tensors of the InputBatch get record_stream(main).
+  dg   drop a dead gather in GPUModelRunner.sample_tokens: set_draft_tokens(input_batch,
+       req_states.draft_tokens[idx_mapping]) only reads the gathered tensor's shape unless the batch has
+       structured-output requests -> pass the view req_states.draft_tokens[:num_reqs] then (same shape). Source-level
+       patch of sample_tokens (one expression), checked verbatim.
 """
 from __future__ import annotations
 
 import functools
 import logging
-import os
 
 import torch
 import triton
@@ -52,12 +35,6 @@ from torch._inductor.runtime.triton_helpers import libdevice
 OPT_NAME = "ll5_fuse"
 log = logging.getLogger("atdev_serve")
 
-CN = os.environ.get("ATDEV_LL5_CN", "0") == "1"
-OVL = int(os.environ.get("ATDEV_LL5_OVL", "0"))
-GAPS = int(os.environ.get("ATDEV_LL5_GAPS", "0"))
-TAIL = os.environ.get("ATDEV_LL5_TAIL", "0") == "1"
-TREE = os.environ.get("ATDEV_LL5_TREE", "0") == "1"
-DG = os.environ.get("ATDEV_LL5_DG", "0") == "1"
 _N: dict = {}
 
 
@@ -68,7 +45,7 @@ def _once(key: str, msg: str, *a) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# LL5-cn: conv.finish + add-RMSNorm
+# cn: conv.finish + add-RMSNorm
 # ---------------------------------------------------------------------------------------------------------------
 
 
@@ -226,17 +203,12 @@ def cnb_run(x, delta, base, conv_a, res, w, block_size: int, store_res: bool):
     return rout, out
 
 
-def _stock_finish(x, delta, base, block_size):
-    from vllm.model_executor.models import qwen3_dflash2 as q2
-    return q2.dflash2_grouped_conv_impl(x, delta, base, block_size, 16)
-
-
 def _cna_op(x: torch.Tensor, delta: torch.Tensor, base: torch.Tensor, res: torch.Tensor, w: torch.Tensor,
             block_size: int) -> tuple[torch.Tensor, torch.Tensor]:
     if not _ok(x, delta, base, res, w):
         raise RuntimeError(f"atdev {OPT_NAME}: cna layout x {tuple(x.shape)} {x.stride()} delta "
                            f"{tuple(delta.shape)} {delta.stride()}")
-    _once("cna", "LL5-cn conv.finish + add-RMSNorm (attention side) ENGAGED")
+    _once("cna", "conv.finish + add-RMSNorm (attention side) ENGAGED")
     return cna_run(x, delta, base, res, w, block_size)
 
 
@@ -248,7 +220,7 @@ def _cnb_op(x: torch.Tensor, delta: torch.Tensor, base: torch.Tensor, conv_a: to
             w: torch.Tensor, block_size: int, store_res: bool) -> tuple[torch.Tensor, torch.Tensor]:
     if not (_ok(x, delta, base, res, w) and conv_a.is_contiguous() and conv_a.shape == x.shape):
         raise RuntimeError(f"atdev {OPT_NAME}: cnb layout x {tuple(x.shape)} {x.stride()}")
-    _once("cnb", "LL5-cn conv.finish + add-RMSNorm (mlp side, store_res=%s) ENGAGED", store_res)
+    _once("cnb", "conv.finish + add-RMSNorm (mlp side, store_res=%s) ENGAGED", store_res)
     rout, out = cnb_run(x, delta, base, conv_a, res, w, block_size, store_res)
     return (rout if store_res else x.new_empty(0)), out
 
@@ -290,7 +262,7 @@ def _install_cn() -> None:
     def __init__(self, *a, **kw):
         orig_init(self, *a, **kw)
         self._atdev_ll5_ok = _model_ok(self)
-        log.warning("atdev %s: LL5-cn drafter model check %s", OPT_NAME, self._atdev_ll5_ok)
+        log.warning("atdev %s: drafter conv.finish + add-RMSNorm fusion eligible: %s", OPT_NAME, self._atdev_ll5_ok)
 
     cls.__init__ = __init__
 
@@ -325,21 +297,17 @@ def _install_cn() -> None:
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# LL5-ovl: next-step prep on a side stream, overlapped with the drafter graph
+# ovl: next-step prep on a side stream, overlapped with the drafter graph
 # ---------------------------------------------------------------------------------------------------------------
 
 
 class _Ovl:
-    bt = False  # this step: target-group gather / slot mappings on the side stream
-    d0 = -1
-    n2 = 0
     side = None
     ev = None
     pending = False
     main = None
     active = False
     n = 0
-    skip = 0
 
 
 O = _Ovl()
@@ -350,65 +318,6 @@ def _ovl_join() -> None:
         O.main.wait_stream(O.side)
         torch.cuda.set_stream(O.main)
         O.active = False
-
-
-def _draft_suffix(runner) -> int:
-    """First KV-group id of the drafter if the drafter groups are exactly the last groups, else 0."""
-    sp = getattr(runner, "speculator", None)
-    gids = sorted(getattr(sp, "draft_kv_cache_group_ids", []) or [])
-    g = runner.block_tables.num_kv_cache_groups
-    if not gids or gids != list(range(gids[0], g)) or gids[0] == 0 or runner.block_tables.cp_size != 1:
-        log.warning("atdev %s: LL5-ovl2 drafter groups %s of %d are not a suffix -> level 1 only", OPT_NAME, gids, g)
-        return 0
-    log.warning("atdev %s: LL5-ovl2 target groups 0..%d on the side stream, drafter groups %s on main", OPT_NAME,
-                gids[0] - 1, gids)
-    return gids[0]
-
-
-def _install_bt() -> None:
-    from vllm.v1.attention.backends.utils import PAD_SLOT_ID
-    from vllm.v1.worker.gpu import block_table as btm
-
-    B = btm.BlockTables
-    orig_g = B.gather_block_tables
-    orig_s = B.compute_slot_mappings
-
-    def gather_block_tables(self, idx_mapping, num_reqs_padded, out=None, out_ptrs=None):
-        if not (O.bt and O.active is False and out is None and torch.cuda.current_stream() == O.main):
-            return orig_g(self, idx_mapping, num_reqs_padded, out=out, out_ptrs=out_ptrs)
-        g, d0 = self.num_kv_cache_groups, O.d0
-        num_reqs = idx_mapping.shape[0]
-        nb = self.num_blocks.gpu
-        with torch.cuda.stream(O.side):
-            btm._gather_block_tables_kernel[(d0, num_reqs_padded)](
-                idx_mapping, self.block_table_ptrs, self.input_block_table_ptrs, self.block_table_strides, nb,
-                nb.stride(0), num_reqs, BLOCK_SIZE=1024)
-        btm._gather_block_tables_kernel[(g - d0, num_reqs_padded)](
-            idx_mapping, self.block_table_ptrs[d0:], self.input_block_table_ptrs[d0:], self.block_table_strides[d0:],
-            nb[d0:], nb.stride(0), num_reqs, BLOCK_SIZE=1024)
-        return tuple(bt[:num_reqs_padded] for bt in self.input_block_tables)
-
-    def compute_slot_mappings(self, idx_mapping, query_start_loc, positions, num_tokens_padded, out=None):
-        if not (O.bt and O.active is False and out is None and torch.cuda.current_stream() == O.main):
-            return orig_s(self, idx_mapping, query_start_loc, positions, num_tokens_padded, out=out)
-        num_reqs = idx_mapping.shape[0]
-        sm = self.slot_mappings
-        with torch.cuda.stream(O.side):
-            btm._compute_slot_mappings_kernel[(O.d0, num_reqs + 1)](
-                sm.shape[1], idx_mapping, query_start_loc, positions, self.block_table_ptrs,
-                self.block_table_strides, self.block_sizes_tensor, self.kernel_block_sizes_tensor,
-                self.slot_mapping_enabled, self.dcp_sharded, sm, sm.stride(0), self.cp_rank, CP_SIZE=self.cp_size,
-                CP_INTERLEAVE=self.cp_interleave, PAD_ID=PAD_SLOT_ID, TRITON_BLOCK_SIZE=1024)
-        O.main.wait_stream(O.side)
-        O.bt = False
-        O.n2 += 1
-        if O.n2 == 1:
-            log.warning("atdev %s: LL5-ovl2 target-group gather / slot mappings on the side stream ENGAGED",
-                        OPT_NAME)
-        return sm[:, :num_tokens_padded]
-
-    B.gather_block_tables = gather_block_tables
-    B.compute_slot_mappings = compute_slot_mappings
 
 
 def _install_ovl() -> None:
@@ -445,22 +354,12 @@ def _install_ovl() -> None:
 
     def prepare_inputs(self, scheduler_output, batch_req_state, batch_desc, num_active_loras):
         pend, O.pending = O.pending, False
-        O.bt = False
         ok = (pend and not batch_req_state.has_prefill and not scheduler_output.scheduled_new_reqs
               and bool(scheduler_output.scheduled_spec_decode_tokens) and not getattr(self, "lora_config", None)
               and getattr(self, "pcp_manager", None) is None and getattr(self, "adaptive_verification", None) is None
               and getattr(self, "fast_prefill", None) is None and not torch.cuda.is_current_stream_capturing())
         if not ok:
-            if pend:
-                O.skip += 1
             return orig_pi(self, scheduler_output, batch_req_state, batch_desc, num_active_loras)
-        O.bt = False
-        if OVL >= 2:
-            so = scheduler_output
-            upd = bool(so.block_table_updates) or any(b is not None for b in so.scheduled_cached_reqs.new_block_ids)
-            if O.d0 < 0:
-                O.d0 = _draft_suffix(self)
-            O.bt = (not upd) and O.d0 > 0
         O.main = torch.cuda.current_stream()
         O.side.wait_event(O.ev)
         torch.cuda.set_stream(O.side)
@@ -474,126 +373,10 @@ def _install_ovl() -> None:
                 v.record_stream(O.main)
         O.n += 1
         if O.n == 1:
-            log.warning("atdev %s: LL5-ovl prep overlapped with the drafter graph ENGAGED", OPT_NAME)
+            log.warning("atdev %s: next-step prep overlapped with the drafter graph ENGAGED", OPT_NAME)
         return ib
 
     cls.prepare_inputs = prepare_inputs
-    if OVL >= 2:
-        _install_bt()
-
-
-# ---------------------------------------------------------------------------------------------------------------
-# LL5-gaps: no-profiler e1 / e2 timing
-# ---------------------------------------------------------------------------------------------------------------
-
-
-def _install_gaps() -> None:
-    import statistics
-
-    Gr = torch.cuda.CUDAGraph
-    if getattr(Gr.replay, "_atdev_ll5", False):
-        return
-    orig = Gr.replay
-    pend: list = []
-    dur: dict = {}
-    acc = {"T": [], "D": [], "e1": [], "e2": []}
-    st = {"steps": 0}
-
-    def resolve():
-        while pend and pend[0][2].query():
-            gid, a, b = pend.pop(0)
-            d = a.elapsed_time(b) * 1e3
-            if "tg" not in st:
-                dur.setdefault(gid, []).append(d)
-                big = sorted(((statistics.median(v), k) for k, v in dur.items() if len(v) >= 30), reverse=True)
-                if len(big) >= 2:
-                    st["tg"], st["dg"] = big[0][1], big[1][1]
-                continue
-            if gid == st["tg"]:
-                if st.get("d") is not None:
-                    acc["e2"].append(st["d"].elapsed_time(a) * 1e3)
-                    st["steps"] += 1
-                acc["T"].append(d)
-                st["t"], st["d"] = b, None
-            elif gid == st["dg"]:
-                if st.get("t") is not None:
-                    acc["e1"].append(st["t"].elapsed_time(a) * 1e3)
-                acc["D"].append(d)
-                st["d"], st["t"] = b, None
-        if st["steps"] >= GAPS:
-            log.warning("atdev %s GAPS: %d steps medians: T %.1f D %.1f e1 %.1f e2 %.1f us (means e1 %.1f e2 %.1f)"
-                        " ovl %d skip %d", OPT_NAME, st["steps"],
-                        *(statistics.median(acc[k]) if acc[k] else -1 for k in ("T", "D", "e1", "e2")),
-                        *(statistics.mean(acc[k]) if acc[k] else -1 for k in ("e1", "e2")), O.n, O.skip)
-            for k in acc:
-                acc[k] = []
-            st["steps"] = 0
-
-    def replay(self):
-        if torch.cuda.is_current_stream_capturing():
-            return orig(self)
-        a = torch.cuda.Event(enable_timing=True)
-        b = torch.cuda.Event(enable_timing=True)
-        a.record()
-        r = orig(self)
-        b.record()
-        pend.append((id(self), a, b))
-        resolve()
-        return r
-
-    replay._atdev_ll5 = True
-    Gr.replay = replay
-
-
-_TEXT = None
-
-
-def text5():
-    global _TEXT
-    if _TEXT is None:
-        from torch.utils.cpp_extension import load
-        _TEXT = load(name="atdev_ll5_tail", sources=[os.path.join(os.path.dirname(__file__), "csrc", "ll5_tail.cu")],
-                     extra_cuda_cflags=["-O3", "-gencode=arch=compute_80,code=sm_80"], verbose=False)
-    return _TEXT
-
-
-_TREXT = None
-
-
-def trext():
-    global _TREXT
-    if _TREXT is None:
-        from torch.utils.cpp_extension import load
-        _TREXT = load(name="atdev_ll5_tree", sources=[os.path.join(os.path.dirname(__file__), "csrc", "ll5_tree.cu")],
-                      extra_cuda_cflags=["-O3", "-gencode=arch=compute_80,code=sm_80"], verbose=False)
-    return _TREXT
-
-
-def tree_ok(scores, cand, num_nodes, chain, unary, mix, pw) -> bool:
-    use_mix = unary is not None and (mix != 0.0 or pw != 1.0)
-    return (not chain and not use_mix and num_nodes == 16 and scores.dim() == 4 and scores.shape[2] == 16
-            and scores.shape[3] == 16 and scores.is_contiguous() and scores.dtype == torch.float32
-            and cand.is_contiguous() and cand.dtype == torch.int64)
-
-
-def _install_tree() -> None:
-    from atdev_serve import gdn_tree as gt
-
-    orig = gt.build_tree_gpu
-    if getattr(orig, "_atdev_ll5", False):
-        return
-
-    def build_tree_gpu(scores, cand, rmap, rmap_stride, tok_out, meta_parent, meta_depth, meta_anc, meta_conv,
-                       num_nodes, chain=False, temperature=1.0, unary=None, mix=0.0, pw=1.0):
-        if not tree_ok(scores, cand, num_nodes, chain, unary, mix, pw):
-            return orig(scores, cand, rmap, rmap_stride, tok_out, meta_parent, meta_depth, meta_anc, meta_conv,
-                        num_nodes, chain=chain, temperature=temperature, unary=unary, mix=mix, pw=pw)
-        _once("tree", "LL5-tree CUDA tree build ENGAGED")
-        trext().tree_build(scores, cand, rmap, int(rmap_stride), tok_out, meta_parent, meta_depth, meta_anc,
-                           meta_conv, 1.0 / float(temperature))
-
-    build_tree_gpu._atdev_ll5 = True
-    gt.build_tree_gpu = build_tree_gpu
 
 
 def _install_dg() -> None:
@@ -606,10 +389,10 @@ def _install_dg() -> None:
         return
     src = textwrap.dedent(inspect.getsource(inspect.unwrap(cls.sample_tokens)))
     if not src.startswith("@torch.inference_mode()\n@step_eplb_after()\ndef sample_tokens("):
-        raise RuntimeError(f"atdev {OPT_NAME}: LL5-dg unexpected sample_tokens source head")
+        raise RuntimeError(f"atdev {OPT_NAME}: dg unexpected sample_tokens source head")
     old = "self.req_states.draft_tokens[input_batch.idx_mapping],\n"
     if src.count(old) != 1 or src.count("input_batch,\n" + " " * 12 + old) != 1:
-        raise RuntimeError(f"atdev {OPT_NAME}: LL5-dg sample_tokens source mismatch")
+        raise RuntimeError(f"atdev {OPT_NAME}: dg sample_tokens source mismatch")
     src = src.replace(old, "(self.req_states.draft_tokens[input_batch.idx_mapping]"
                            " if input_batch.has_structured_output_reqs"
                            " else self.req_states.draft_tokens[: input_batch.num_reqs]),\n")
@@ -617,24 +400,11 @@ def _install_dg() -> None:
     exec(compile(src, mr.__file__ + " (atdev ll5_dg)", "exec"), g)
     cls.sample_tokens = g["sample_tokens"]
     cls._atdev_ll5_dg = True
-    log.warning("atdev %s: LL5-dg dead draft-token gather in sample_tokens removed ENGAGED", OPT_NAME)
+    log.warning("atdev %s: dead draft-token gather in sample_tokens removed ENGAGED", OPT_NAME)
 
 
 def register() -> None:
-    if DG:
-        _install_dg()
-    if TREE:
-        trext()
-        _install_tree()
-    if TAIL:
-        from atdev_serve import ll1_fuse
-        ll1_fuse._TEXT = text5()  # ll1_fuse.tail_run -> text().tail2 of the LL5 build
-        log.warning("atdev %s: LL5-tail register sort ENGAGED (ll1 tail ext replaced)", OPT_NAME)
-    if CN:
-        _install_cn()
-    if OVL:
-        _install_ovl()
-    if GAPS:
-        _install_gaps()
-    log.warning("atdev %s: registered (cn=%d ovl=%d gaps=%d tail=%d tree=%d dg=%d)", OPT_NAME, CN, OVL, GAPS, TAIL,
-                TREE, DG)
+    _install_dg()
+    _install_cn()
+    _install_ovl()
+    log.warning("atdev %s: registered (cn, ovl, dg)", OPT_NAME)

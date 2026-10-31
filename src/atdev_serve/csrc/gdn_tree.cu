@@ -1,8 +1,7 @@
-// CUDA tree-verify GDN kernel for c=1 DFlash2 tree verify (E2, docs/research/E2-tree-cuda.md,
-// design docs/research/P3-gemm.md §3l). Replaces, per GDN layer, the Triton
+// CUDA tree-verify GDN kernel for the c=1 DFlash2 tree verify. Replaces, per GDN layer, the Triton
 // _conv_tree_vec_kernel + _gdn_tree_kernel (+ the fused-norm ticket tail) of gdn_tree.py.
 //
-// Same slot / log / parity semantics as gdn_tree._gdn_tree_kernel (A3 layout, BV = 32):
+// Same slot / log / parity semantics as gdn_tree._gdn_tree_kernel (single-state layout, BV = 32):
 //   h <- slot s0 rows [iv*32, iv*32+32) of value head hv (bf16), replay log entries 0..a-2,
 //   tree pass (ancestor-masked WY form, N <= 16 nodes), outputs for all nodes,
 //   slot s0 <- state after the root, log nodes 1..T-1 into buffer 1-p, parity flip.
@@ -11,7 +10,7 @@
 // key head hk form a group with rank = (hv % G) * 4 + iv. Requires every CTA of the grid to be
 // resident (1 request: 192 CTAs, 2 CTAs/SM) -- the host wrapper enforces R == 1.
 //
-// v3 structure (v1/v2: csrc/gdn_var/gdn_tree_v2.cu; profile in E2-tree-cuda.md):
+// Structure:
 //  * CONV: each CTA convolves only its own channels: its 2-3 chunks of 8 q/k channels of the key
 //    head (32 chunks / 12 ranks) and its 32 v channels; it alone rewrites their conv state (no
 //    cross-CTA hazard). The q/k slice is published to a global scratch with a release flag tagged
@@ -32,45 +31,17 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-#ifndef GT_SPLITS
-#define GT_SPLITS 3  // bf16 pieces of the replayed fp32 state in KSt/QSt (3: ~2^-24, 2: ~2^-17 relative)
-#endif
-#ifndef GT_SWAP
-#define GT_SWAP 0  // 1: balance mma work over the SM sub-partitions (state / node warp roles by %warpid)
-#endif
-#ifndef GT_BA
-// 1: in_proj_ba folded into the kernel (ATDEV_TREE_BA_FOLD=1): ranks 0..7 of a key-head group each compute one
-// K-split of ba = rstd * (a_norm @ W_ba^T) for the group's 2G columns with the SAME mma.m16n8k16 chain as
-// c1_norm._ba_gemv_r_kernel (split 8, k16 steps in order, fp32), publish it with a generation-tagged flag; every
-// CTA sums the 8 splits in order 0..7, scales by rstd and rounds to bf16 -> bit-identical b / a.
-#define GT_BA 0
-#endif
-#ifndef GT_BA_W01
-// 1 (with GT_BA): the ba split chain of a producer rank runs on warps 0-1 after the log replay (concurrent with the
-// q/k exchange / norms of warps 2-3) instead of on warp 3 before the q/k exchange (TA-ba-prof: the serial chain
-// delayed the q/k critical path of 8 of the 12 CTAs of a group). Same mma chain -> same bits.
-#define GT_BA_W01 0
-#endif
+#define GT_SPLITS 3  // bf16 pieces of the replayed fp32 state in KSt/QSt (~2^-24 relative)
 #ifndef GT_BAP
-// 1 (ATDEV_C1_BA_STREAM=2): b / a arrive as the UNSCALED fp32 in_proj_ba accumulator (c1_norm.ba_tot, computed on
+// 1: b / a arrive as the UNSCALED fp32 in_proj_ba accumulator (c1_norm.ba_tot, computed on
 // a side stream concurrently with the qkvz GEMM) plus the qkvz consumer's rstd; the kernel applies
 // bf16(tot * rstd) itself (= c1_norm._ba_gemv_r_kernel's epilogue: fp32 mul RN, bf16 RN) -> bit-identical.
 #define GT_BAP 0
-#endif
-#if GT_BA && GT_BAP
-#error "GT_BA and GT_BAP are exclusive"
-#endif
-#if GT_BA && GT_SWAP
-#error "GT_BA needs GT_SWAP=0 (the staging warp is the role warp 3)"
-#endif
-#ifndef GT_PROF
-#define GT_PROF 0  // 1: per-warp clock64 phase stamps -> part[kProfOff + ((cta * 4 + warp) * 16 + k) * 2]
 #endif
 
 namespace {
 
 typedef __nv_bfloat16 bf16;
-constexpr int kProfOff = 1 << 16;
 
 constexpr int kK = 128;
 constexpr int kV = 128;
@@ -84,6 +55,8 @@ constexpr int kMaxSl = 24;  // max q/k slice channels per CTA (3 chunks of 8)
 constexpr int kCX = kMaxSl + kBV;  // own conv channels: [slice | v]
 constexpr int kXP = 64;     // bf16 pitch of the raw conv rows
 constexpr int kRP = 20;     // fp32 pitch of the rhs tile
+constexpr int kNPP = 20;  // fp32 pitch of XT / Pq / Z (20: rows 2t apart hit distinct banks)
+constexpr int kOP = 40;  // bf16 pitch of the output tile
 
 struct Args {
   const bf16* q; const bf16* k; const bf16* v; int64_t sq, sk, sv;
@@ -107,25 +80,7 @@ struct Args {
   int H, HV, G, max_log;
   int64_t log_base, buf, v_off, d_off, b_off;  // fp32 elements inside slot s1
   float scale, eps, sp_beta, sp_thr;
-#if GT_BA
-  const bf16* bax; int64_t sbax;  // normed GDN input a_norm [T, K_ba] (pre-rstd)
-  const bf16* baw; int64_t sbaw;  // in_proj_ba weight [2 HV, K_ba] bf16
-  const float* bar;               // rstd [T] (qkvz consumer)
-  float* bap;                     // [R * H][8 splits][16 rows][8 cols] fp32 partials
-  unsigned* baf;                  // [R * H][8] split flags (gen)
-  bf16* bao; int64_t sbao;        // optional ba output [T, 2 HV] (tests); nullptr in serving
-  int kba;                        // K of in_proj_ba (5120)
-#endif
 };
-#if GT_BA
-constexpr int kBaSplit = 8;
-constexpr int kBaKMax = 640;          // K / 8 for K = 5120
-constexpr int kBaP = kBaKMax + 8;     // bf16 pitch (1296 B: conflict-free fragment loads)
-struct __align__(16) BaSmem {
-  bf16 x[kNP][kBaP];
-  bf16 w[8][kBaP];
-};
-#endif
 
 struct __align__(16) Smem {
   bf16 h[kBV][kPad];
@@ -133,14 +88,15 @@ struct __align__(16) Smem {
   bf16 k[kNP][kPad];
   float lk[kNP][kK];
   float lv[kNP][kBV];
-  float XT[kNP][kNP];
-  float Pq[kNP][kNP];
-  float Z[kNP][kNP];
+  float XT[kNP][kNPP];
+  float Pq[kNP][kNPP];
+  float Z[kNP][kNPP];
   float rhs[kBV][kRP];
   bf16 x[kNP + 3][kXP];  // raw conv rows of the own channels; rows 16..18: window (oldest..newest)
   bf16 v[kNP][kBV];
   bf16 zg[kNP][kBV];
-  bf16 o[kNP][kBV];
+  bf16 o[kNP][kOP];
+  float qs[kBV][12];  // QS of nodes 8..15 (warps 0-1 -> warps 2-3)
   float cw[kCX][4];
   float cb[kCX];
   float nw[kBV];
@@ -168,6 +124,11 @@ __device__ __forceinline__ unsigned long long ld_relaxed_u64(const unsigned long
   asm volatile("ld.relaxed.gpu.global.u64 %0, [%1];" : "=l"(v) : "l"(p) : "memory");
   return v;
 }
+__device__ __forceinline__ int ld_meta(const int* p) {
+  int v;
+  asm volatile("ld.global.s32 %0, [%1];" : "=r"(v) : "l"(p));
+  return v;
+}
 __device__ __forceinline__ unsigned ld_acquire_u32(const unsigned* p) {
   unsigned v;
   asm volatile("ld.acquire.gpu.global.u32 %0, [%1];" : "=r"(v) : "l"(p) : "memory");
@@ -183,11 +144,6 @@ __device__ __forceinline__ uint2 ld_relaxed_v2(const uint2* p) {
 }
 __device__ __forceinline__ void st_relaxed_v2(uint2* p, uint2 v) {
   asm volatile("st.relaxed.gpu.global.v2.u32 [%0], {%1, %2};" ::"l"(p), "r"(v.x), "r"(v.y) : "memory");
-}
-__device__ __forceinline__ unsigned long long gtimer() {
-  unsigned long long t;
-  asm volatile("mov.u64 %0, %globaltimer;" : "=l"(t));
-  return t;
 }
 __device__ __forceinline__ float rcp_approx(float x) {
   float y;
@@ -206,22 +162,6 @@ __device__ __forceinline__ uint32_t lds32(const bf16* p) { return *reinterpret_c
 __device__ __forceinline__ float2 bf2f(uint32_t u) {
   return __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&u));
 }
-
-#if GT_PROF
-#define PROF(k) (ts_[k] = clock64())
-#define PROF_DUMP()                                                                               \
-  do {                                                                                            \
-    if (lane == 0) {                                                                              \
-      unsigned long long* d_ = reinterpret_cast<unsigned long long*>(p.part + kProfOff) +         \
-                               ((blockIdx.y * gridDim.x + blockIdx.x) * 4 + warp) * 16;           \
-      ts_[14] = gtimer();                                                                         \
-      _Pragma("unroll") for (int k_ = 0; k_ < 16; ++k_) d_[k_] = ts_[k_];                         \
-    }                                                                                             \
-  } while (0)
-#else
-#define PROF(k) do {} while (0)
-#define PROF_DUMP() do {} while (0)
-#endif
 
 // D += A (16x16 bf16, row) * B (16x8 bf16, col), fp32 accumulate
 __device__ __forceinline__ void mma16816(float (&d)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
@@ -272,23 +212,26 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
   const int hk = hv / p.G;
   const int rank = (hv % p.G) * kNV + iv;
   const int vb = iv * kBV;
-  const int bos = p.cu[n];
-  const int T = p.cu[n + 1] - bos;
-  if (T <= 0) return;
-  const int s0 = p.idx[n * p.idx_row], s1 = p.idx[n * p.idx_row + 1];
+  // all metadata words in one round trip, issued before any branch (the compiler otherwise chains
+  // cu -> exit test -> idx -> acc as three dependent global round trips)
+  const int bos = ld_meta(p.cu + n);
+  const int cu1 = ld_meta(p.cu + n + 1);
+  const int s0 = ld_meta(p.idx + (int64_t)n * p.idx_row), s1 = ld_meta(p.idx + (int64_t)n * p.idx_row + 1);
+  const int acc_pre = ld_meta(p.acc + n);
+  const int T = cu1 - bos;
+  // one branch consuming all five words -> the loads are issued together (acc > 2^31-16 never occurs)
+  if (T <= 0 || s0 <= 0 || s1 <= 0 || T > p.max_log + 1 || T > kNP || acc_pre > 0x7ffffff0) {
+    if (T > 0)
+      for (int e = tid; e < T * kBV; e += kThreads)
+        p.out[(int64_t)(bos + e / kBV) * p.so + hv * kV + vb + e % kBV] = __float2bfloat16(0.f);
+    return;
+  }
   if (s0 <= 0 || s1 <= 0 || T > p.max_log + 1 || T > kNP) {
     for (int e = tid; e < T * kBV; e += kThreads)
       p.out[(int64_t)(bos + e / kBV) * p.so + hv * kV + vb + e % kBV] = __float2bfloat16(0.f);
     return;
   }
-#if GT_PROF
-  unsigned long long ts_[16];
-#pragma unroll
-  for (int k_ = 0; k_ < 16; ++k_) ts_[k_] = 0;
-  ts_[15] = gtimer();
-#endif
-  PROF(0);
-  const int acc_n = p.acc[n];
+  const int acc_n = acc_pre;
   int n_rep = acc_n - 1;
   n_rep = n_rep < 0 ? 0 : (n_rep > p.max_log ? p.max_log : n_rep);
   unsigned long long* cnt = p.cnt + (int64_t)n * p.H + hk;
@@ -356,7 +299,7 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
         r_a = __bfloat162float(__float2bfloat16_rn(__fmul_rn(p.af[(int64_t)(bos + tid) * p.sa + hv], rr)));
         r_b = __bfloat162float(__float2bfloat16_rn(__fmul_rn(p.bf[(int64_t)(bos + tid) * p.sb + hv], rr)));
       }
-#elif !GT_BA
+#else
       r_a = __bfloat162float(p.a[(int64_t)(bos + tid) * p.sa + hv]);
       r_b = __bfloat162float(p.b[(int64_t)(bos + tid) * p.sb + hv]);
 #endif
@@ -394,21 +337,22 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
   // replay log (dependent on the parity word)
   const int pb = n_rep > 0 ? (parv & 1) : 0;
   const float* rbuf = lslot + p.log_base + (int64_t)pb * p.buf;
-  for (int e = tid; e < n_rep * 40; e += kThreads) {
-    const int j = e / 40, c = e % 40;
-    if (c < 32) cp_async_16(&s.lk[j][c * 4], rbuf + (int64_t)(j * p.H + hk) * kK + c * 4);
-    else cp_async_16(&s.lv[j][(c - 32) * 4], rbuf + p.v_off + (int64_t)(j * p.HV + hv) * kV + vb + (c - 32) * 4);
+  // the replay log (one more dependent round trip: parity -> log) is a separate cp.async group of warps 0-1
+  // only, waited for just before the replay; the prologue barrier waits for the rest only
+  cp_async_commit();
+  float r_ld = 0.f, r_lb = 0.f;
+  if (tid < 64) {
+    for (int e = tid; e < n_rep * 40; e += 64) {
+      const int j = e / 40, c = e % 40;
+      if (c < 32) cp_async_16(&s.lk[j][c * 4], rbuf + (int64_t)(j * p.H + hk) * kK + c * 4);
+      else cp_async_16(&s.lv[j][(c - 32) * 4], rbuf + p.v_off + (int64_t)(j * p.HV + hv) * kV + vb + (c - 32) * 4);
+    }
+    if (tid < n_rep) {
+      r_ld = rbuf[p.d_off + tid * p.HV + hv];
+      r_lb = rbuf[p.b_off + tid * p.HV + hv];
+    }
   }
   cp_async_commit();
-#if GT_BA
-  BaSmem& bs = *reinterpret_cast<BaSmem*>(smem_raw + sizeof(Smem));
-  const int bks = p.kba / kBaSplit;  // K of one split
-  const bool ba_prod = rank < kBaSplit;
-#endif
-  if (tid >= 96 && tid - 96 < n_rep) {
-    r_m0 = rbuf[p.d_off + (tid - 96) * p.HV + hv];
-    r_m1 = rbuf[p.b_off + (tid - 96) * p.HV + hv];
-  }
   // ---- smem stores of the plain loads
   if (tid < kNP) {
     s.av[tid] = r_a; s.bv[tid] = r_b; s.anc[tid] = r_anc;
@@ -420,15 +364,10 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
   }
   if (tid == 0) {
     s.gen = (unsigned)(t0 / (unsigned long long)nb) + 1u;  // t0: before this CTA's arrival
-    unsigned wid;
-    asm volatile("mov.u32 %0, %%warpid;" : "=r"(wid));
-    // co-resident CTAs usually occupy warp slots 0-3 / 4-7 -> sub-partitions 0-3 twice: give the
-    // state (mma-heavy) role to sub-partitions 0-1 in one CTA and 2-3 in the other
-    s.swap = GT_SWAP ? (int)((wid >> 2) & 1u) : 0;
+    s.swap = 0;
   }
   if (tid >= 96) {
     if (NORM) s.nw[tid - 96] = r_nw;
-    if (tid - 96 < n_rep) { s.ld[tid - 96] = r_m0; s.lb[tid - 96] = r_m1; }
   }
   if (CONV && chg >= 0) {
 #pragma unroll
@@ -437,30 +376,12 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
     s.cw[tid][0] = w01.x; s.cw[tid][1] = w01.y; s.cw[tid][2] = w23.x; s.cw[tid][3] = w23.y;
     s.cb[tid] = __bfloat162float(r_cb);
   }
-  cp_async_wait_all();
+  asm volatile("cp.async.wait_group 1;\n" ::: "memory");  // all but the log group
   __syncthreads();
-#if GT_BA
-  // ba split staging (producer ranks): issued by warps 2-3 after the prologue, lands during the conv phase
-  if (ba_prod && (GT_BA_W01 ? warp < 2 : warp >= 2)) {
-    const int k0 = rank * bks, nch = bks / 8, l64 = GT_BA_W01 ? tid : tid - 64;
-    for (int e = l64; e < kNP * nch; e += 64) {
-      const int i = e / nch, c = e % nch;
-      if (i < T) cp_async_16(&bs.x[i][c * 8], p.bax + (int64_t)(bos + i) * p.sbax + k0 + c * 8);
-      else *reinterpret_cast<uint4*>(&bs.x[i][c * 8]) = make_uint4(0, 0, 0, 0);
-    }
-    for (int e = l64; e < 8 * nch; e += 64) {
-      const int j = e / nch, c = e % nch;
-      const int col = j < p.G ? hk * p.G + j : j < 2 * p.G ? p.HV + hk * p.G + (j - p.G) : -1;
-      if (col >= 0) cp_async_16(&bs.w[j][c * 8], p.baw + (int64_t)col * p.sbaw + k0 + c * 8);
-      else *reinterpret_cast<uint4*>(&bs.w[j][c * 8]) = make_uint4(0, 0, 0, 0);
-    }
-    cp_async_commit();
-  }
-#endif
   // generation of this launch (t0 was read before this CTA's arrival; every launch adds exactly nb)
   const unsigned gen = s.gen;
   if ((CONV || NORM) && tid == 0) asm volatile("red.relaxed.gpu.global.add.u64 [%0], 1;" ::"l"(cnt) : "memory");
-  PROF(1);
+
 
   // ---------------- conv of the own channels: unit = (channel pair, 4 nodes)
   if (CONV) {
@@ -522,35 +443,27 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
         if (cc < ncol) base[(int64_t)cc * p.cs_tok] = vals[cc];
     }
   }
-  PROF(2);
   const int rw = warp ^ (s.swap ? 2 : 0);  // role warp
   const int rt = rw * 32 + lane;           // role thread
 
   if (rw >= 2) {
     // ================= warps 2-3: q/k rows of the group, norms, node parameters, node matrices
-#if GT_BA
-    if (!GT_BA_W01 && ba_prod) {  // warps 2-3 staged the split: both wait for their copies, then meet
-      cp_async_wait_all();
-      bar_sync(7, 64);
-    }
-    if (!GT_BA_W01 && rw == 3 && ba_prod) {
-      // split `rank` of ba for the group's 2G columns: one sequential chain of bks / 16 k16 mma steps
-      float acc[4] = {0.f, 0.f, 0.f, 0.f};
-      for (int st = 0; st < bks / 16; ++st) {
-        const int col = 16 * st + 2 * t;
-        const uint32_t a[4] = {lds32(&bs.x[g][col]), lds32(&bs.x[g + 8][col]), lds32(&bs.x[g][col + 8]),
-                               lds32(&bs.x[g + 8][col + 8])};
-        mma16816(acc, a, lds32(&bs.w[g][col]), lds32(&bs.w[g][col + 8]));
+    if (rw == 3 && lane < kNP) {  // node parameters (need only the prologue's a / b / A_log / dt_bias / anc)
+      const int i = lane;
+      const float A = __expf(s.Alog);
+      const float xx = s.av[i] + s.dtb;
+      const float sp = p.sp_beta * xx <= p.sp_thr ? rcp_approx(p.sp_beta) * __logf(1.0f + __expf(p.sp_beta * xx)) : xx;
+      const float gi = i < T ? -A * sp : 0.f;
+      const float bi = i < T ? sigmoid_f(s.bv[i]) : 0.f;
+      const unsigned an = s.anc[i];
+      float Gi = 0.f;
+#pragma unroll
+      for (int j = 0; j < kNP; ++j) {
+        const float gj = __shfl_sync(0x0000ffffu, gi, j, 16);
+        Gi += ((an >> j) & 1u) ? gj : 0.f;
       }
-      float* dst = p.bap + (((int64_t)n * p.H + hk) * kBaSplit + rank) * (kNP * 8);
-      *reinterpret_cast<float2*>(dst + g * 8 + 2 * t) = make_float2(acc[0], acc[1]);
-      *reinterpret_cast<float2*>(dst + (g + 8) * 8 + 2 * t) = make_float2(acc[2], acc[3]);
-      __threadfence();
-      __syncwarp();
-      if (lane == 0) st_release_u32(p.baf + ((int64_t)n * p.H + hk) * kBaSplit + rank, gen);
-      PROF(9);
+      s.gg[i] = gi; s.beta[i] = bi; s.G[i] = Gi; s.eG[i] = __expf(Gi);
     }
-#endif
     if (CONV) {
       if (rw == 2) {
         const unsigned* fl = p.qkf + ((int64_t)n * p.H + hk) * 16;
@@ -573,81 +486,45 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
       cp_async_commit();
       cp_async_wait_all();
       bar_sync(6, 64);
+      bar_arrive(4, 128);  // q / k rows in smem: warps 0-1 may start KSt / QSt
     }
-    PROF(3);
+    float c[2][4];
+    // node matrices on the raw (un-normalised) q / k rows: independent of the l2 norms
+    if (rw == 2) node_mma(s.k, s.k, g, t, c);
+    else node_mma(s.q, s.k, g, t, c);
     {
-      // l2 norms: rw 2 -> q rows, rw 3 -> k rows (16 each)
+      // l2 norms: rw 2 -> q rows, rw 3 -> k rows (16 each); reduce-scatter over the 32 lanes
       const bf16 (*M)[kPad] = rw == 2 ? s.q : s.k;
-      float ssq[16];
+      float a[16];
 #pragma unroll
       for (int r = 0; r < 16; ++r) {
         const uint2 u = *reinterpret_cast<const uint2*>(&M[r][lane * 4]);
         const float2 x01 = bf2f(u.x), x23 = bf2f(u.y);
-        ssq[r] = x01.x * x01.x + x01.y * x01.y + x23.x * x23.x + x23.y * x23.y;
+        a[r] = x01.x * x01.x + x01.y * x01.y + x23.x * x23.x + x23.y * x23.y;
       }
-#pragma unroll
-      for (int o = 16; o > 0; o >>= 1)
-#pragma unroll
-        for (int r = 0; r < 16; ++r) ssq[r] += __shfl_xor_sync(0xffffffffu, ssq[r], o);
-      float v = ssq[0];
-#pragma unroll
-      for (int r = 1; r < 16; ++r) v = (lane & 15) == r ? ssq[r] : v;
-      if (lane < 16) {
-        const float rs = rsqrtf(v + 1e-6f);
-        if (rw == 2) s.rq[lane] = rs; else s.rk[lane] = rs;
+      {
+        // after the step with offset o (16, 8, 4, 2) the lane keeps the half of its rows selected by lane bit o
+#define NRS_STEP(HW, O)                                                     \
+  {                                                                         \
+    const bool hi = (lane & (O)) != 0;                                      \
+    _Pragma("unroll") for (int q = 0; q < (HW); ++q) {                      \
+      const float keep = hi ? a[q + (HW)] : a[q];                           \
+      const float send = hi ? a[q] : a[q + (HW)];                           \
+      a[q] = keep + __shfl_xor_sync(0xffffffffu, send, (O));                \
+    }                                                                       \
+  }
+        NRS_STEP(8, 16) NRS_STEP(4, 8) NRS_STEP(2, 4) NRS_STEP(1, 2)
+#undef NRS_STEP
+        a[0] += __shfl_xor_sync(0xffffffffu, a[0], 1);  // lane holds row (lane >> 1)
       }
-#if GT_BA
-      if (rw == 3) {
-        const unsigned* fl = p.baf + ((int64_t)n * p.H + hk) * kBaSplit;
-        bool ok = false;
-        while (!ok) {
-          const unsigned f = lane < kBaSplit ? ld_acquire_u32(fl + lane) : gen;
-          ok = __all_sync(0xffffffffu, f == gen);
-        }
-        PROF(10);
-        if (lane < kNP) {
-          const int i = lane, j = hv % p.G;
-          const float* src = p.bap + ((int64_t)n * p.H + hk) * kBaSplit * (kNP * 8) + i * 8;
-          float tb = 0.f, ta = 0.f;
-#pragma unroll
-          for (int sp = 0; sp < kBaSplit; ++sp) {
-            tb += __ldcg(src + sp * (kNP * 8) + j);
-            ta += __ldcg(src + sp * (kNP * 8) + p.G + j);
-          }
-          const float rr = i < T ? p.bar[bos + i] : 0.f;
-          const bf16 bb = __float2bfloat16(tb * rr), aa = __float2bfloat16(ta * rr);
-          s.bv[i] = __bfloat162float(bb);
-          s.av[i] = __bfloat162float(aa);
-          if (p.bao && iv == 0 && i < T) {
-            p.bao[(int64_t)(bos + i) * p.sbao + hv] = bb;
-            p.bao[(int64_t)(bos + i) * p.sbao + p.HV + hv] = aa;
-          }
-        }
-      }
-#endif
-      if (rw == 3 && lane < kNP) {
-        const int i = lane;
-        const float A = __expf(s.Alog);
-        const float xx = s.av[i] + s.dtb;
-        const float sp = p.sp_beta * xx <= p.sp_thr ? rcp_approx(p.sp_beta) * __logf(1.0f + __expf(p.sp_beta * xx)) : xx;
-        const float gi = i < T ? -A * sp : 0.f;
-        const float bi = i < T ? sigmoid_f(s.bv[i]) : 0.f;
-        const unsigned an = s.anc[i];
-        float Gi = 0.f;
-#pragma unroll
-        for (int j = 0; j < kNP; ++j) {
-          const float gj = __shfl_sync(0x0000ffffu, gi, j, 16);
-          Gi += ((an >> j) & 1u) ? gj : 0.f;
-        }
-        s.gg[i] = gi; s.beta[i] = bi; s.G[i] = Gi; s.eG[i] = __expf(Gi);
+      if ((lane & 1) == 0) {
+        const float rs = rsqrtf(a[0] + 1e-6f);
+        if (rw == 2) s.rq[lane >> 1] = rs; else s.rk[lane >> 1] = rs;
       }
     }
     bar_sync(6, 64);
     bar_arrive(5, 128);  // q/k, norms, node params ready for warps 0-1
     // ---------------- node matrices
-    float c[2][4];
-    if (rw == 2) node_mma(s.k, s.k, g, t, c);
-    else node_mma(s.q, s.k, g, t, c);
 #pragma unroll
     for (int nt = 0; nt < 2; ++nt)
 #pragma unroll
@@ -663,7 +540,6 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
           s.Pq[i][j] = m ? ratio * qk : 0.f;
         }
       }
-    PROF(4);
     if (rw == 2) {
       __syncwarp();
       // P = (I - X)^-1, X strictly lower: P[i][j] = d_ij + sum_{m<i} X[i][m] P[m][j]; lane -> column j
@@ -683,9 +559,7 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
 #pragma unroll
         for (int i = m + 1; i < kNP; ++i) ac[i] = fmaf(xr[i], pc[m], ac[i]);
       }
-      PROF(5);
       bar_sync(1, 64);  // Pq from rw 3
-      PROF(6);
       // Z = Pq P: lane -> column j, rows 8*(lane>>4) .. +7
       const int i0 = (lane >> 4) * 8;
 #pragma unroll
@@ -702,8 +576,9 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
         }
         s.Z[i][j] = za + zb;
       }
-      PROF(7);
       bar_arrive(2, 96);
+      __syncwarp();
+      bar_arrive(9, 64);
     } else {
       bar_arrive(1, 64);
       // ---------------- token log: nodes 1..T-1 -> entries 0..T-2 of buffer 1-p
@@ -725,8 +600,51 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
       }
       if (lane == 0) *parw = 1 - pb;
     }
-    PROF(8);
-    PROF_DUMP();
+    {
+      if (rw == 3) bar_sync(9, 64);  // Z from rw 2
+      bar_sync(8, 128);              // rhs + QS(nodes 8..15) from warps 0-1
+      const int pw = rw - 2;
+      const int r0 = 16 * pw + g, r1 = r0 + 8;
+      float rr0[kNP], rr1[kNP];
+#pragma unroll
+      for (int q4 = 0; q4 < 4; ++q4) {
+        const float4 a4 = *reinterpret_cast<const float4*>(&s.rhs[r0][q4 * 4]);
+        const float4 b4 = *reinterpret_cast<const float4*>(&s.rhs[r1][q4 * 4]);
+        rr0[q4 * 4] = a4.x; rr0[q4 * 4 + 1] = a4.y; rr0[q4 * 4 + 2] = a4.z; rr0[q4 * 4 + 3] = a4.w;
+        rr1[q4 * 4] = b4.x; rr1[q4 * 4 + 1] = b4.y; rr1[q4 * 4 + 2] = b4.z; rr1[q4 * 4 + 3] = b4.w;
+      }
+      float ps[2];
+#pragma unroll
+      for (int c2 = 0; c2 < 2; ++c2) {
+        const int i = 8 + 2 * t + c2;
+        float z0 = 0.f, z1 = 0.f;
+#pragma unroll
+        for (int q4 = 0; q4 < 4; ++q4) {
+          const float4 zz = *reinterpret_cast<const float4*>(&s.Z[i][q4 * 4]);
+          z0 = fmaf(rr0[q4 * 4], zz.x, z0); z0 = fmaf(rr0[q4 * 4 + 1], zz.y, z0);
+          z0 = fmaf(rr0[q4 * 4 + 2], zz.z, z0); z0 = fmaf(rr0[q4 * 4 + 3], zz.w, z0);
+          z1 = fmaf(rr1[q4 * 4], zz.x, z1); z1 = fmaf(rr1[q4 * 4 + 1], zz.y, z1);
+          z1 = fmaf(rr1[q4 * 4 + 2], zz.z, z1); z1 = fmaf(rr1[q4 * 4 + 3], zz.w, z1);
+        }
+        const float eg = s.eG[i];
+        const float o0 = __bfloat162float(__float2bfloat16(fmaf(eg, s.qs[r0][2 * t + c2], z0)));
+        const float o1 = __bfloat162float(__float2bfloat16(fmaf(eg, s.qs[r1][2 * t + c2], z1)));
+        s.o[i][r0] = __float2bfloat16(o0);
+        s.o[i][r1] = __float2bfloat16(o1);
+        ps[c2] = o0 * o0 + o1 * o1;
+      }
+      if (NORM) {
+#pragma unroll
+        for (int o = 4; o < 32; o <<= 1)
+#pragma unroll
+          for (int c2 = 0; c2 < 2; ++c2) ps[c2] += __shfl_xor_sync(0xffffffffu, ps[c2], o);
+        if (g == 0) {
+#pragma unroll
+          for (int c2 = 0; c2 < 2; ++c2) s.ss[pw][8 + 2 * t + c2] = ps[c2];
+        }
+      }
+      bar_arrive(10, 128);  // o / ss of nodes 8..15 ready
+    }
     return;  // warps 2-3 done
   }
 
@@ -741,7 +659,10 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
     h[st][0][0] = a0.x; h[st][0][1] = a0.y; h[st][0][2] = a1.x; h[st][0][3] = a1.y;
     h[st][1][0] = b0.x; h[st][1][1] = b0.y; h[st][1][2] = b1.x; h[st][1][3] = b1.y;
   }
-  // ---------------- replay (A3 order: decay, delta = (v - h k) beta, h += delta k^T)
+  cp_async_wait_all();
+  if (tid < n_rep) { s.ld[tid] = r_ld; s.lb[tid] = r_lb; }
+  bar_sync(7, 64);  // warps 0-1: log in smem
+  // ---------------- replay (single-state order: decay, delta = (v - h k) beta, h += delta k^T)
   for (int j = 0; j < n_rep; ++j) {
     const float d = s.ld[j], bt = s.lb[j];
     const float v0 = s.lv[j][r0], v1 = s.lv[j][r1];
@@ -779,31 +700,7 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
         h[st][1][e] = fmaf(del1, kv[st][e], h[st][1][e]);
       }
   }
-#if GT_BA && GT_BA_W01
-  if (ba_prod) {  // warps 0-1 staged the split: wait for the copies, meet, warp 1 runs the chain
-    cp_async_wait_all();
-    bar_sync(7, 64);
-    if (rw == 1) {
-      // split `rank` of ba for the group's 2G columns: one sequential chain of bks / 16 k16 mma steps
-      float acc[4] = {0.f, 0.f, 0.f, 0.f};
-      for (int st = 0; st < bks / 16; ++st) {
-        const int col = 16 * st + 2 * t;
-        const uint32_t a[4] = {lds32(&bs.x[g][col]), lds32(&bs.x[g + 8][col]), lds32(&bs.x[g][col + 8]),
-                               lds32(&bs.x[g + 8][col + 8])};
-        mma16816(acc, a, lds32(&bs.w[g][col]), lds32(&bs.w[g][col + 8]));
-      }
-      float* dst = p.bap + (((int64_t)n * p.H + hk) * kBaSplit + rank) * (kNP * 8);
-      *reinterpret_cast<float2*>(dst + g * 8 + 2 * t) = make_float2(acc[0], acc[1]);
-      *reinterpret_cast<float2*>(dst + (g + 8) * 8 + 2 * t) = make_float2(acc[2], acc[3]);
-      __threadfence();
-      __syncwarp();
-      if (lane == 0) st_release_u32(p.baf + ((int64_t)n * p.H + hk) * kBaSplit + rank, gen);
-    }
-  }
-#endif
-  PROF(3);
-  bar_sync(5, 128);  // q/k + norms + node params from warps 2-3
-  PROF(4);
+  if (CONV) bar_sync(4, 128); // q / k rows loaded by warps 2-3
   // ---------------- KSt = h k^T, QSt = h q^T (bf16x3 split of h: exact products)
   float aK[3][2][4], aQ[3][2][4];
 #pragma unroll
@@ -844,7 +741,7 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
       }
     }
   }
-  PROF(5);
+  bar_sync(5, 128);  // norms + node params from warps 2-3 (q / k were in smem already)
   // C layout: [nt][e] -> row (e<2 ? r0 : r1), node j = nt*8 + 2t + (e&1)
   float QS[2][4], RH[2][4];
 #pragma unroll
@@ -858,69 +755,12 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
       const float vv = __bfloat162float(s.v[j][row]);
       RH[nt][e] = s.beta[j] * (vv - s.eG[j] * ks);
       s.rhs[row][j] = RH[nt][e];
+      if (nt == 1) s.qs[row][2 * t + (e & 1)] = QS[1][e];
     }
   __syncwarp();
-  PROF(6);
-  bar_sync(2, 96);  // Z from rw 2
-  PROF(7);
-  // ---------------- out[v][i] = e^G_i QSt[v][i] + sum_j rhs[v][j] Z[i][j]
-  float rr0[kNP], rr1[kNP];
-#pragma unroll
-  for (int q4 = 0; q4 < 4; ++q4) {
-    const float4 a4 = *reinterpret_cast<const float4*>(&s.rhs[r0][q4 * 4]);
-    const float4 b4 = *reinterpret_cast<const float4*>(&s.rhs[r1][q4 * 4]);
-    rr0[q4 * 4] = a4.x; rr0[q4 * 4 + 1] = a4.y; rr0[q4 * 4 + 2] = a4.z; rr0[q4 * 4 + 3] = a4.w;
-    rr1[q4 * 4] = b4.x; rr1[q4 * 4 + 1] = b4.y; rr1[q4 * 4 + 2] = b4.z; rr1[q4 * 4 + 3] = b4.w;
-  }
-  float ob[2][4];
-#pragma unroll
-  for (int nt = 0; nt < 2; ++nt)
-#pragma unroll
-    for (int c2 = 0; c2 < 2; ++c2) {
-      const int i = nt * 8 + 2 * t + c2;
-      float z0 = 0.f, z1 = 0.f;
-#pragma unroll
-      for (int q4 = 0; q4 < 4; ++q4) {
-        const float4 zz = *reinterpret_cast<const float4*>(&s.Z[i][q4 * 4]);
-        z0 = fmaf(rr0[q4 * 4], zz.x, z0); z0 = fmaf(rr0[q4 * 4 + 1], zz.y, z0);
-        z0 = fmaf(rr0[q4 * 4 + 2], zz.z, z0); z0 = fmaf(rr0[q4 * 4 + 3], zz.w, z0);
-        z1 = fmaf(rr1[q4 * 4], zz.x, z1); z1 = fmaf(rr1[q4 * 4 + 1], zz.y, z1);
-        z1 = fmaf(rr1[q4 * 4 + 2], zz.z, z1); z1 = fmaf(rr1[q4 * 4 + 3], zz.w, z1);
-      }
-      const float eg = s.eG[i];
-      ob[nt][c2] = __bfloat162float(__float2bfloat16(fmaf(eg, QS[nt][c2], z0)));
-      ob[nt][2 + c2] = __bfloat162float(__float2bfloat16(fmaf(eg, QS[nt][2 + c2], z1)));
-      s.o[i][r0] = __float2bfloat16(ob[nt][c2]);
-      s.o[i][r1] = __float2bfloat16(ob[nt][2 + c2]);
-    }
-  PROF(8);
-  uint2* parts = reinterpret_cast<uint2*>(p.part) + ((int64_t)n * p.HV + hv) * (kNV * kNP);
-  if (NORM) {
-    float ps[2][2];
-#pragma unroll
-    for (int nt = 0; nt < 2; ++nt)
-#pragma unroll
-      for (int c2 = 0; c2 < 2; ++c2) ps[nt][c2] = ob[nt][c2] * ob[nt][c2] + ob[nt][2 + c2] * ob[nt][2 + c2];
-#pragma unroll
-    for (int o = 4; o < 32; o <<= 1)
-#pragma unroll
-      for (int nt = 0; nt < 2; ++nt)
-#pragma unroll
-        for (int c2 = 0; c2 < 2; ++c2) ps[nt][c2] += __shfl_xor_sync(0xffffffffu, ps[nt][c2], o);
-    if (g == 0) {
-#pragma unroll
-      for (int nt = 0; nt < 2; ++nt)
-#pragma unroll
-        for (int c2 = 0; c2 < 2; ++c2) s.ss[rw][nt * 8 + 2 * t + c2] = ps[nt][c2];
-    }
-    bar_sync(3, 64);
-    if (rt < kNP) {  // (value, generation): one 8-byte single-copy-atomic store, no fence needed
-      st_relaxed_v2(parts + iv * kNP + rt, make_uint2(__float_as_uint(s.ss[0][rt] + s.ss[1][rt]), gen));
-    }
-  }
-  PROF(9);
+  bar_arrive(8, 128);
   // ---------------- state commit: h_root = h e^{g0} + w0 k0^T (w0 = rhs[:, 0] since P[0][j] = d_0j)
-  {
+  auto commit = [&]() {
     const float e0 = __expf(s.gg[0]);
     const float w00 = __shfl_sync(0xffffffffu, RH[0][0], g * 4);
     const float w01 = __shfl_sync(0xffffffffu, RH[0][2], g * 4);
@@ -949,20 +789,74 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
       *reinterpret_cast<uint4*>(hsrc + row * (kK * 2) + (e & 15) * 16) =
           *reinterpret_cast<const uint4*>(&s.h[row][(e & 15) * 8]);
     }
+  };
+  bar_sync(2, 96);  // Z from rw 2
+  // ---------------- out[v][i] = e^G_i QSt[v][i] + sum_j rhs[v][j] Z[i][j]
+  float rr0[kNP], rr1[kNP];
+#pragma unroll
+  for (int q4 = 0; q4 < 4; ++q4) {
+    const float4 a4 = *reinterpret_cast<const float4*>(&s.rhs[r0][q4 * 4]);
+    const float4 b4 = *reinterpret_cast<const float4*>(&s.rhs[r1][q4 * 4]);
+    rr0[q4 * 4] = a4.x; rr0[q4 * 4 + 1] = a4.y; rr0[q4 * 4 + 2] = a4.z; rr0[q4 * 4 + 3] = a4.w;
+    rr1[q4 * 4] = b4.x; rr1[q4 * 4 + 1] = b4.y; rr1[q4 * 4 + 2] = b4.z; rr1[q4 * 4 + 3] = b4.w;
   }
-  PROF(10);
+  float ob[2][4] = {};
+  constexpr int kNT = 1;  // node halves computed by warps 0-1
+#pragma unroll
+  for (int nt = 0; nt < kNT; ++nt)
+#pragma unroll
+    for (int c2 = 0; c2 < 2; ++c2) {
+      const int i = nt * 8 + 2 * t + c2;
+      float z0 = 0.f, z1 = 0.f;
+#pragma unroll
+      for (int q4 = 0; q4 < 4; ++q4) {
+        const float4 zz = *reinterpret_cast<const float4*>(&s.Z[i][q4 * 4]);
+        z0 = fmaf(rr0[q4 * 4], zz.x, z0); z0 = fmaf(rr0[q4 * 4 + 1], zz.y, z0);
+        z0 = fmaf(rr0[q4 * 4 + 2], zz.z, z0); z0 = fmaf(rr0[q4 * 4 + 3], zz.w, z0);
+        z1 = fmaf(rr1[q4 * 4], zz.x, z1); z1 = fmaf(rr1[q4 * 4 + 1], zz.y, z1);
+        z1 = fmaf(rr1[q4 * 4 + 2], zz.z, z1); z1 = fmaf(rr1[q4 * 4 + 3], zz.w, z1);
+      }
+      const float eg = s.eG[i];
+      ob[nt][c2] = __bfloat162float(__float2bfloat16(fmaf(eg, QS[nt][c2], z0)));
+      ob[nt][2 + c2] = __bfloat162float(__float2bfloat16(fmaf(eg, QS[nt][2 + c2], z1)));
+      s.o[i][r0] = __float2bfloat16(ob[nt][c2]);
+      s.o[i][r1] = __float2bfloat16(ob[nt][2 + c2]);
+    }
+  uint2* parts = reinterpret_cast<uint2*>(p.part) + ((int64_t)n * p.HV + hv) * (kNV * kNP);
+  if (NORM) {
+    float ps[2][2];
+#pragma unroll
+    for (int nt = 0; nt < kNT; ++nt)
+#pragma unroll
+      for (int c2 = 0; c2 < 2; ++c2) ps[nt][c2] = ob[nt][c2] * ob[nt][c2] + ob[nt][2 + c2] * ob[nt][2 + c2];
+#pragma unroll
+    for (int o = 4; o < 32; o <<= 1)
+#pragma unroll
+      for (int nt = 0; nt < kNT; ++nt)
+#pragma unroll
+        for (int c2 = 0; c2 < 2; ++c2) ps[nt][c2] += __shfl_xor_sync(0xffffffffu, ps[nt][c2], o);
+    if (g == 0) {
+#pragma unroll
+      for (int nt = 0; nt < kNT; ++nt)
+#pragma unroll
+        for (int c2 = 0; c2 < 2; ++c2) s.ss[rw][nt * 8 + 2 * t + c2] = ps[nt][c2];
+    }
+    bar_sync(10, 128);
+    if (rt < kNP) {  // (value, generation): one 8-byte single-copy-atomic store, no fence needed
+      st_relaxed_v2(parts + iv * kNP + rt, make_uint2(__float_as_uint(s.ss[0][rt] + s.ss[1][rt]), gen));
+    }
+  }
+  commit();
   // ---------------- gated RMSNorm: sums of squares of the bf16 outputs of the 4 V-blocks
   if (NORM) {
     // thread -> (V-block jv, node i): poll the tagged pair until it carries this launch's generation
     const int jv = rt >> 4, i = rt & 15;
-    PROF(11);
     uint2 pr;
     do {
       pr = ld_relaxed_v2(parts + jv * kNP + i);
     } while (pr.y != gen);
     s.tot[jv][i] = __uint_as_float(pr.x);
     bar_sync(3, 64);
-    PROF(12);
     // thread -> node i = rt >> 2 (16 nodes x 4 threads), 8 v each
     const int in = rt >> 2, v0 = (rt & 3) * 8;
     if (in < T) {
@@ -986,21 +880,15 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_tree_kernel(Args p) {
           make_uint4(w4[0], w4[1], w4[2], w4[3]);
     }
   } else {
-    bar_sync(3, 64);
+    bar_sync(10, 128);
     const int i = rt >> 2, v0 = (rt & 3) * 8;
     if (i < T)
       *reinterpret_cast<uint4*>(p.out + (int64_t)(bos + i) * p.so + hv * kV + vb + v0) =
           *reinterpret_cast<const uint4*>(&s.o[i][v0]);
   }
-  PROF(13);
-  PROF_DUMP();
 }
 
-#if GT_BA
-constexpr int kSmemBytes = (int)(sizeof(Smem) + sizeof(BaSmem));
-#else
 constexpr int kSmemBytes = (int)sizeof(Smem);
-#endif
 
 template <bool CONV, bool NORM, bool SIGMOID, bool ACT>
 void launch(const Args& a, int R, cudaStream_t st) {
@@ -1028,18 +916,12 @@ void gdn_tree_fwd(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tens
                   int64_t H, int64_t R, double scale, double eps, double sp_beta, double sp_thr,
                   int64_t max_log, int64_t log_base, int64_t buf, int64_t v_off, int64_t d_off,
                   int64_t b_off
-#if GT_BA
-                  , torch::Tensor bax, torch::Tensor baw, torch::Tensor bar, torch::Tensor bap,
-                  torch::Tensor baf, torch::Tensor bao
-#endif
 #if GT_BAP
                   , torch::Tensor bar
 #endif
                   ) {
   TORCH_CHECK(state.scalar_type() == at::kBFloat16 && state.size(2) == kV && state.size(3) == kK);
-#if GT_BA
-  TORCH_CHECK(out.scalar_type() == at::kBFloat16);
-#elif GT_BAP
+#if GT_BAP
   TORCH_CHECK(out.scalar_type() == at::kBFloat16 && a.scalar_type() == at::kFloat && b.scalar_type() == at::kFloat &&
               bar.scalar_type() == at::kFloat && bar.stride(0) == 1 && a.stride(1) == 1 && b.stride(1) == 1);
 #else
@@ -1062,27 +944,7 @@ void gdn_tree_fwd(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tens
     p.k = reinterpret_cast<const bf16*>(k.data_ptr()); p.sk = k.stride(0);
     p.v = reinterpret_cast<const bf16*>(v.data_ptr()); p.sv = v.stride(0);
   }
-#if GT_BA
-  {
-    const int HV = (int)state.size(1), G = HV / (int)H;
-    TORCH_CHECK(2 * G <= 8, "GT_BA: 2 G ba columns must fit one n8 tile");
-    TORCH_CHECK(bax.scalar_type() == at::kBFloat16 && baw.scalar_type() == at::kBFloat16 &&
-                bar.scalar_type() == at::kFloat && bap.scalar_type() == at::kFloat && baf.scalar_type() == at::kInt);
-    TORCH_CHECK(bax.stride(1) == 1 && baw.stride(1) == 1 && bar.stride(0) == 1 && baw.size(0) == 2 * HV);
-    TORCH_CHECK(bax.size(1) == baw.size(1) && bax.size(1) % (16 * kBaSplit) == 0 && bax.size(1) / kBaSplit <= kBaKMax);
-    TORCH_CHECK((bax.stride(0) * 2) % 16 == 0 && (baw.stride(0) * 2) % 16 == 0 && bax.data_ptr() != nullptr &&
-                reinterpret_cast<uintptr_t>(bax.data_ptr()) % 16 == 0 && reinterpret_cast<uintptr_t>(baw.data_ptr()) % 16 == 0);
-    TORCH_CHECK(bap.numel() >= R * H * kBaSplit * kNP * 8 && baf.numel() >= R * H * kBaSplit);
-    p.bax = reinterpret_cast<const bf16*>(bax.data_ptr()); p.sbax = bax.stride(0);
-    p.baw = reinterpret_cast<const bf16*>(baw.data_ptr()); p.sbaw = baw.stride(0);
-    p.bar = bar.data_ptr<float>();
-    p.bap = bap.data_ptr<float>();
-    p.baf = reinterpret_cast<unsigned*>(baf.data_ptr());
-    p.bao = bao.numel() ? reinterpret_cast<bf16*>(bao.data_ptr()) : nullptr;
-    p.sbao = bao.numel() ? bao.stride(0) : 0;
-    p.kba = (int)bax.size(1);
-  }
-#elif GT_BAP
+#if GT_BAP
   p.af = a.data_ptr<float>(); p.sa = a.stride(0);
   p.bf = b.data_ptr<float>(); p.sb = b.stride(0);
   p.bar_p = bar.data_ptr<float>();
@@ -1137,6 +999,5 @@ std::vector<int64_t> occupancy() {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gdn_tree_fwd", &gdn_tree_fwd);
   m.def("occupancy", &occupancy);
-  m.attr("ba_fold") = (bool)GT_BA;
   m.attr("ba_pre") = (bool)GT_BAP;
 }
