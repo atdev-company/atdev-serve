@@ -1,68 +1,68 @@
 # atdev-serve
 
-## Up to 14.2× faster Qwen3.8-27B inference on a single A100, passing our accuracy gates
+## Accuracy-validated development profiles for Qwen3.8-27B on one A100
 
-- **14.2×** faster single-user decoding than the original bf16 model on stock vLLM (28.9 → **408.9 tok/s**)
-- **2.08×** faster than the best stock-vLLM configuration we could find (196.5 → 408.9 tok/s)
-- **4.1×** more throughput at 32 concurrent requests than bf16 on stock vLLM, and **1.55×** more than the best vLLM settings (→ **2,730.9 tok/s**)
-- Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API
-- 🤗 Model files on Hugging Face: [atdev-company/Qwen3.8-27B-atdev-c1](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) (W3 overlay + DFlash2 drafter, downloaded automatically on first start)
+**2026-11-01 update:** broader accuracy validation recovered MMLU-Pro and KMMLU to within
+1 percentage point of the two-run stock INT4 mean, with **357.17 tok/s at c=1** and
+**2,322.62 tok/s at c=32**. These are **1.82x / 1.32x** the stored best-vLLM throughput
+references. [Full validation and limitations](docs/ACCURACY_RECOVERY.md).
 
-In this README, **c=N means N concurrent clients**: c=1 is 1 client (a single user, one request at a time), c=32 is 32 concurrent clients (32 requests in flight).
+> **Profile versus release:** these new measurements are validated development configurations.
+> This documentation update does not replace the uploaded model weights or launcher defaults.
+> The current `serve_c1.sh` / `serve_c32.sh` still launch the legacy W3 / unrotated W4A4 profiles;
+> they do **not** reproduce the new accuracy table as-is. The recovered c32 profile additionally
+> needs rotated weights and corresponding runtime changes not included in this documentation update.
 
-> **More models coming.** We are optimizing other widely used open models in the same way and will release them here and on [Hugging Face](https://huggingface.co/atdev-company) as they are ready. Watch or star this repository to get notified.
-
-atdev-serve installs next to an unmodified `pip install vllm==0.31.0` and hooks in through vLLM's
-plugin entry point. It adds custom CUDA kernels, tree-based speculative decoding, fusions and
-scheduling. You pick a configuration with one launch script and talk to the usual OpenAI-compatible
-vLLM server.
-
-> **Using an AI coding agent?** Give it the path or URL of [`AI_SETUP.md`](AI_SETUP.md)
-> (`https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md`). That file contains
-> everything the agent needs to install, launch and verify the server on its own.
-
-> **Built by [ATDEV](https://www.atdev.co.kr).** We tune LLM inference for your model on your GPUs:
-> custom kernels, speculative decoding, quantization and serving-stack tuning. See
-> [Work with ATDEV](#work-with-atdev) or write to [atdev@atdev.co.kr](mailto:atdev@atdev.co.kr).
+- c=1 means one request at a time; c=32 means 32 concurrent requests.
+- Drop-in plugin for unmodified `vllm==0.31.0`, with the usual OpenAI-compatible API.
+- [Code installation guide](docs/USER_GUIDE.md) / [AI setup guide](AI_SETUP.md).
+- [Hugging Face artifacts](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1): clean d16 drafter
+  and **legacy W3 overlays**; recovered c1 disables those overlays.
+- [Training, calibration and licenses](docs/DATA_AND_LICENSES.md): distinguishes drafter learning,
+  token-order statistics, c32 quantization calibration and evaluation-only data.
 
 ## Results at a glance
 
-Qwen3.8-27B on 1x A100 80GB, vLLM 0.31.0, greedy decoding, 96 fixed prompts (coding, agentic,
-general, math; 39 in Korean), up to 1024 output tokens each.
+One A100 80GB, vLLM 0.31.0, greedy decoding. Speed workload: 96 fixed prompts (39 Korean),
+up to 1,024 output tokens; two measured repetitions per recovered profile.
 
-| | **c=1: 1 client** (single user, one request at a time)<br>decode tok/s per request | **c=32: 32 concurrent clients** (32 requests in flight)<br>aggregate output tok/s |
+| configuration | c=1 mean decode tok/s | c=32 aggregate output tok/s |
 |---|---:|---:|
-| Original bf16 model, vLLM defaults | 28.9 | 671.8 |
-| INT4 checkpoint (RedHatAI), vLLM defaults | 74.9 | 1,264.7 |
-| INT4 + **best vLLM settings** we found | 196.5 | 1,757.1 |
-| **atdev-serve, engine only** (same model files as vLLM) | 284.4 (**1.45x** vs best vLLM) | 2,135.7 (**1.22x**) |
-| **atdev-serve, full stack** (engine + model-side changes) | **408.9** (**2.08x**) | **2,730.9** (**1.55x**) |
-| full stack vs original bf16 + vLLM defaults | **14.2x** | **4.1x** |
+| Stored best stock vLLM INT4 reference | 196.5 | 1,757.1 |
+| **Accuracy-recovered development profile** | **357.17 (1.82x)** | **2,322.62 (1.32x)** |
+| Legacy public full stack — historical, different numerics | 408.9 | 2,730.9 |
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c1-dark.svg">
-  <img alt="c=1 ladder (1 client, one request at a time): bf16 default 28.9, INT4 default 74.9, best vLLM 196.5, atdev engine only 284.4, atdev full stack 408.9 tok/s" src="docs/img/ladder_c1.svg">
-</picture>
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c32-dark.svg">
-  <img alt="c=32 ladder (32 concurrent clients): bf16 default 671.8, INT4 default 1264.7, best vLLM 1757.1, atdev engine only 2135.7, atdev full stack 2,730.9 tok/s" src="docs/img/ladder_c32.svg">
-</picture>
+The recovered profiles give up **12.65% / 14.95%** of the legacy public speed. Baseline
+throughputs above are historical stored measurements, not remeasured in this session. The old
+14.2x / 4.1x bf16 comparisons and ladder charts describe the legacy profile, not the recovered one.
 
-Two kinds of results are reported separately:
+| accuracy | stock INT4 run 1 / 2 | recovered c1 | recovered c32 |
+|---|---:|---:|---:|
+| MMLU-Pro (1,400) | 71.50% / 71.93% | 71.43% | 71.71% |
+| KMMLU (1,125) | 67.11% / 66.58% | 66.22% | 67.20% |
+| IFEval prompt strict (541) | 83.36% / 82.44% | 82.99% | 84.47% |
+| HumanEval+ (164, executed tests) | 90.24% / 91.46% | 91.46% | 92.68% |
+| MBPP+ (378, executed tests) | 76.72% / 76.19% | 76.98% | 76.72% |
+| GSM8K all 1,319 | 94.62% (one stock run) | 94.77% | 94.54% |
+| WikiText-2 perplexity | 7.29872 | 7.30004 | 7.20929 |
+| Long-context retrieval | — | 36/36 | 36/36 |
 
-* **Engine only.** atdev-serve uses the **same model files** as the vLLM baseline (RedHatAI INT4
-  target, stock `z-lab/Qwen3.8-27B-DFlash2` drafter or the built-in MTP head) and the same vLLM
-  flags. Only engine work is added: kernels, fusions, the tree-verification algorithm, scheduling and
-  metadata.
-* **Full stack.** The engine plus **model-side changes** that a vLLM user could also make on their
-  own: 3-bit weights, a re-trained drafter, W4A4 activations, low-bit verify-head parts. These change
-  model files or numerics. Accuracy gates cover them (see [Accuracy](#accuracy)).
+C1 restores the INT4 target body by disabling all extra W3 paths. C32 uses Hadamard-rotated
+weights and restores `down_proj` activation precision to W4A8. Low-bit verify heads remain
+approximate. C32 MBPP **base** is 89.68%, 1.85 / 1.32 points below the two stock runs;
+MBPP+ is near stock. Near-reference aggregate scores do not establish universal losslessness.
+IFEval references and candidates use the same deterministic scoring adapter; see the
+[full scoring conditions, paired comparisons and audit](docs/ACCURACY_RECOVERY.md).
 
-All accuracy gates pass: GSM8K stays within 1 point of the stock vLLM reference and long-context
-retrieval is 36/36 in every configuration. Details and the full method are in
-[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+> **Built by [ATDEV](https://www.atdev.co.kr).** We tune model inference on your GPUs:
+> custom kernels, speculative decoding, quantization and serving-stack tuning.
+> [atdev@atdev.co.kr](mailto:atdev@atdev.co.kr)
 
 ## Quick start
+
+These commands run the **currently published legacy profiles**, not the recovered development
+profiles measured above. Read the [profile/release distinction](docs/ACCURACY_RECOVERY.md) before
+using the results as a deployment accuracy claim.
 
 You need: Linux, an **A100 80GB**, an NVIDIA driver that supports CUDA 13.0, 80 GB of free disk,
 and Hugging Face Hub access. The step-by-step guide is [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
@@ -118,10 +118,13 @@ Both stacks serve any number of requests. They are just tuned for different load
 
 One decode step has three parts. A cheap **drafter** guesses several next tokens. The 27B
 **target** model checks all the guesses in one forward pass (verification). Then the engine keeps
-the longest correct prefix. With greedy decoding the output is what the target alone would produce,
-and the speed comes from accepting many tokens per step while making each step cheap.
+the longest correct prefix. Acceptance uses the configured target verification path. Low-bit target and verify-head
+approximations can change final answers; there is no blanket bit-identity claim against stock INT4.
 Qwen3.8-27B is a hybrid model: 48 Gated DeltaNet (GDN, linear-attention) layers and 16 full-attention
 layers, so verification needs kernels for both.
+
+The mechanism diagrams and per-feature gains below describe the **historical development
+ladder**. They are not additive gains or a reproduction recipe for the November 1 profiles.
 
 ### c=1 (1 client, one request at a time): wide, deep token trees
 
@@ -129,7 +132,7 @@ layers, so verification needs kernels for both.
 flowchart LR
     A["Drafter<br/>DFlash2 d16, W4A16<br/>one block of 16 positions"] --> B["Tree builder<br/>top candidates per position<br/>-> 16-node tree, depth up to 15"]
     B --> C["Target verify<br/>1 forward pass over 16 nodes<br/>W3/W4 Marlin GEMMs<br/>GDN tree kernel + tree attention"]
-    C --> D["Exact greedy accept<br/>longest path where draft == target argmax"]
+    C --> D["Greedy accept<br/>longest path where draft == target argmax"]
     D --> E["Commit<br/>KV + GDN state of the accepted path<br/>(single-state replay)"]
     E --> A
 ```
@@ -139,7 +142,7 @@ flowchart LR
 | Tree verification (`dflash_tree`) | engine | Turns the DFlash2 candidate scores into a 16-node token tree and verifies all branches in one target pass instead of one chain | with GDN single-state + split-KV attention: 196.5 -> 242.0 tok/s (1.23x, same files) |
 | GDN single-state verify (`gdn_single_state`) | engine | Verification writes the GDN recurrent state once instead of once per draft token. Accepted tokens are replayed from a small log | part of the 1.23x step above |
 | CUDA GDN tree kernel (`gdn_tree_cuda`) | engine | One fused CUDA kernel runs the gated delta-rule recurrence over the tree's ancestor paths, conv, gating and norm | +3.0% |
-| Candidate-selection approximations (`shadow_head`, `draft_vocab`) | engine | The drafter scores only a 64k frequent-token vocabulary with an int4 copy of `lm_head`. These are used **only to choose candidates**, and every accepted token is verified by the exact path | +7.5% |
+| Candidate-selection approximations (`shadow_head`, `draft_vocab`) | engine | The drafter scores only a 64k frequent-token vocabulary with an int4 copy of `lm_head`. These are used **only to choose candidates**, and accepted tokens are checked by the configured target path; low-bit verify heads are approximate | +7.5% |
 | Tuned Marlin tiles + fused epilogues (`marlin_plus`, `c1_fuse`) | engine | Per-shape launch configs for M=16 W4A16 GEMMs. RMSNorm, residual and SiLU-mul are folded into the GEMM epilogues | +2.4%, +3.5% |
 | Exact tree attention (`tree_attn`) | engine | CUDA tree-masked split-KV attention that reproduces vLLM's Triton kernel bit for bit, with the gate and KV write fused | 16 layers at 1k context: 655 -> 370 us |
 | Bit-identical glue cuts (`ll1_fuse`, `ll5_fuse`, graph stream forks) | engine | Small drafter / accept kernels fused or moved onto side streams inside CUDA graphs | about +1-2% in total |
@@ -173,36 +176,22 @@ More detail, the step-time breakdown and the full milestone history are in
 
 ## Accuracy
 
-Greedy decoding, thinking disabled. GSM8K takes the answer from `\boxed{}`.
-Long-context is 36 passkey / multi-key retrieval items at 2k-6.5k tokens.
-"c=1" rows use the settings tuned for 1 client (one request at a time), "c=32" rows the settings tuned
-for 32 concurrent clients.
+Use the [November 1 full accuracy report](docs/ACCURACY_RECOVERY.md) and
+[machine-readable aggregate evidence](docs/accuracy_recovery.json). GSM8K and long-context alone
+were insufficient to establish broad accuracy for the earlier public profiles. Do not associate
+those profiles' historical gate results with the recovered development measurements.
 
-| configuration | GSM8K (first 300) | GSM8K (all 1319) | long-context |
-|---|---:|---:|---:|
-| Original bf16, vLLM defaults | | 0.9469 | 36/36 |
-| INT4, vLLM defaults | | 0.9431 | 36/36 |
-| best vLLM, c=1 settings | 0.973 | 0.9462 | 36/36 |
-| best vLLM, c=32 settings | 0.953 | 0.9439 | 36/36 |
-| atdev engine only, c=1 | 0.963 | | 36/36 |
-| atdev engine only, c=32 | | 0.9447 | 36/36 |
-| **atdev full stack, c=1** | **0.967** | **0.9500** | **36/36** |
-| **atdev full stack, c=32** | | **0.9401** | **36/36** |
-
-Pass rule: GSM8K within 1 point of the matching stock vLLM reference, and long-context 36/36. A
-blank cell means that gate was not run for that configuration.
-
-**About greedy decoding.** All numbers use temperature 0, and the speculative paths are validated
-for greedy verification. Several engine features are bit-identical to stock vLLM. The full stack is
-not bit-identical, because it changes numerics (3-bit weights, W4A4, low-bit verify-head parts). The
-gates above cover those changes. Sampling (temperature > 0) is not validated in this release.
-
-**About the hardware.** All kernels are compiled for sm_80 and tuned for the A100 80GB (SXM). Other
-GPUs are not supported by this release.
+All measurements use greedy decoding, temperature 0, thinking disabled. Sampling is unvalidated.
+MMLU-Pro and KMMLU use selected subsets (1,400 / 1,125), not their entire upstream test sets.
+C32 knowledge accuracy was generated twice; c1 broad evaluation once. Both speed measurements
+were repeated twice. Several kernels are bit-identical individually, but the full low-bit stack
+is not guaranteed to reproduce stock-model answers.
 
 ## Reproducing the numbers
 
-This repository contains only what is needed to serve the two stacks. The metric definitions, the
+This repository contains the legacy serving package. The recovered development configurations
+and the remaining packaging gap are documented in the accuracy report. Historical launch recipes
+below must not be treated as reproduction of the new measurements. The legacy metric definitions,
 exact baseline `vllm serve` commands and how to compare on your own GPU are in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Measure the baseline and atdev in the same session on the
 same GPU.
@@ -243,22 +232,27 @@ Here c=1 means the stack tuned for 1 client (`serve_c1.sh`), and c=32 the stack 
 | [`z-lab/Qwen3.8-27B-DFlash2`](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) | c=1 (config; weights replaced by the atdev drafter) | Apache-2.0 |
 | [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | c=1: `w3/` (3-bit overlay, 12.5 GB) and `drafter/` (re-trained DFlash2 drafter, 1.35 GB) | Apache-2.0 |
 
-The atdev drafter and the W3 calibration used only prompts from
-`HuggingFaceH4/ultrachat_200k` (train_sft) and `openai/gsm8k` (train), with responses generated by
-the target model.
+The additionally trained drafter and legacy W3 calibration use UltraChat `train_sft` and GSM8K
+`train`, with target-generated responses. Clean2 token-order statistics add 4,000 UltraChat records.
+The recovered c32 quantization calibration additionally uses FineWeb-2 Korean and FineWeb-Edu
+English (ODC-BY). These are calibration sources, not additional drafter training.
+See [data splits, counts, roles and license notices](docs/DATA_AND_LICENSES.md).
 
 ## License
 
 Apache-2.0 (see `LICENSE`). Third-party code is listed in `NOTICE`: vLLM and Marlin (Apache-2.0),
 PyTorch (BSD-3-Clause, `licenses/LICENSE.pytorch`) and flash-linear-attention (MIT). Model files have
-their own licenses, which are listed on their model cards.
+their own licenses, which are listed on their model cards. Dataset terms remain separate: MIT
+for the two drafter prompt sources; ODC-BY for the new FineWeb calibration; KMMLU is CC BY-ND
+and evaluation-only. We publish aggregate results here, not benchmark text. The license inventory
+records the reviewed scope and unresolved upstream content rights; it is not blanket legal clearance.
 
 ## Work with ATDEV
 
 [ATDEV](https://www.atdev.co.kr) optimizes LLM inference for **your model on your target GPUs**.
-This repository is one example of that work: on one A100, Qwen3.8-27B runs **up to 14.2x faster**
-than the original model on stock vLLM (single user), and serves **up to 4.1x** more tokens per second
-at 32 concurrent requests, with accuracy gates in place.
+This repository is one example of that work. The latest accuracy-recovered development profiles
+measure 357.17 / 2,322.62 tok/s on one A100, or 1.82x / 1.32x the stored best-vLLM INT4 references.
+Deployment packaging and measured numerical profiles are distinguished above.
 
 What we do:
 

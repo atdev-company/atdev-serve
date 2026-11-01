@@ -1,5 +1,10 @@
 # AI_SETUP.md: end-to-end setup instructions for AI coding agents
 
+> **2026-11-01 accuracy update:** this file describes the historical published launcher profiles.
+> New accuracy-recovered development profiles measure **357.17 / 2,322.62 tok/s** at c=1/c=32.
+> Their numerical settings differ from these defaults; do not attach the new accuracy scores to
+> the old **408.9 / 2,730.9** settings. See [validation, limits and packaging status](docs/ACCURACY_RECOVERY.md).
+
 You are an AI agent asked to set up **atdev-serve** (a vLLM 0.31.0 plugin that serves Qwen3.8-27B
 fast on one NVIDIA A100 80GB). Execute the phases below in order. Each step lists the command, the
 expected result, and what to do on failure. Do not skip the checks. Report the final values listed in
