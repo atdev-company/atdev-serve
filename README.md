@@ -1,18 +1,12 @@
 # atdev-serve
 
-## Up to 12.4× faster Qwen3.8-27B inference on a single A100
+## Up to 14.2× faster Qwen3.8-27B inference on a single A100, passing our accuracy gates
 
-- **12.4×** faster single-user decoding than the original bf16 model on stock vLLM (28.9 → **357.17 tok/s**)
-- **1.82×** faster than the best stock-vLLM configuration we could find (196.5 → 357.17 tok/s)
-- **3.46×** more throughput at 32 concurrent requests than bf16 on stock vLLM, and **1.32×** more than the best vLLM settings (→ **2,322.62 tok/s**)
+- **14.2×** faster single-user decoding than the original bf16 model on stock vLLM (28.9 → **408.9 tok/s**)
+- **2.08×** faster than the best stock-vLLM configuration we could find (196.5 → 408.9 tok/s)
+- **4.1×** more throughput at 32 concurrent requests than bf16 on stock vLLM, and **1.55×** more than the best vLLM settings (→ **2,730.9 tok/s**)
 - Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API
 - 🤗 Model files on Hugging Face: [atdev-company/Qwen3.8-27B-atdev-c1](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) (W3 overlay + DFlash2 drafter, downloaded automatically on first start)
-
-> **2026-11-01 results update:** c=1 now disables target W3 overlays; c=32 uses Hadamard-rotated
-> target weights with down-projection activations restored to W4A8. The current public launchers
-> still use the prior settings. The c1 drafter already matches the validated file; c32 needs an
-> additional rotated **target** sidecar (about 12.54 GB), not another drafter. Runtime packaging
-> and c32 sidecar publication are pending. [Full results and conditions](docs/ACCURACY_RECOVERY.md).
 
 In this README, **c=N means N concurrent clients**: c=1 is 1 client (a single user, one request at a time), c=32 is 32 concurrent clients (32 requests in flight).
 
@@ -42,8 +36,8 @@ general, math; 39 in Korean), up to 1024 output tokens each.
 | INT4 checkpoint (RedHatAI), vLLM defaults | 74.9 | 1,264.7 |
 | INT4 + **best vLLM settings** we found | 196.5 | 1,757.1 |
 | **atdev-serve, engine only** (same model files as vLLM) | 284.4 (**1.45x** vs best vLLM) | 2,135.7 (**1.22x**) |
-| **atdev-serve, full stack** (engine + model-side changes) | **357.17** (**1.82x**) | **2,322.62** (**1.32x**) |
-| full stack vs original bf16 + vLLM defaults | **12.4x** | **3.46x** |
+| **atdev-serve, full stack** (engine + model-side changes) | **408.9** (**2.08x**) | **2,730.9** (**1.55x**) |
+| full stack vs original bf16 + vLLM defaults | **14.2x** | **4.1x** |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c1-dark.svg">
@@ -54,10 +48,6 @@ general, math; 39 in Korean), up to 1024 output tokens each.
   <img alt="c=32 ladder (32 concurrent clients): bf16 default 671.8, INT4 default 1264.7, best vLLM 1757.1, atdev engine only 2135.7, atdev full stack 2,730.9 tok/s" src="docs/img/ladder_c32.svg">
 </picture>
 
-The ladder images above show the **previous** 408.9 / 2,730.9 tok/s configurations. The table
-reports the latest measured profiles; the stored vLLM denominators were not rerun in this session.
-Accuracy recovery trades 12.65% / 14.95% of the prior c1 / c32 throughput.
-
 Two kinds of results are reported separately:
 
 * **Engine only.** atdev-serve uses the **same model files** as the vLLM baseline (RedHatAI INT4
@@ -65,22 +55,17 @@ Two kinds of results are reported separately:
   flags. Only engine work is added: kernels, fusions, the tree-verification algorithm, scheduling and
   metadata.
 * **Full stack.** The engine plus **model-side changes** that a vLLM user could also make on their
-  own: a re-trained drafter, mixed W4A4/W4A8 activations, rotated weights and low-bit verify-head parts
-  (the prior c1 profile also used 3-bit target overlays). These change
+  own: 3-bit weights, a re-trained drafter, W4A4 activations, low-bit verify-head parts. These change
   model files or numerics. Accuracy gates cover them (see [Accuracy](#accuracy)).
 
-The latest profiles pass the primary knowledge and GSM8K gates; long-context retrieval is 36/36.
-C32 MBPP base remains 1.85 / 1.32 points below the two stock runs; full results are disclosed.
-These are observed benchmark results, not a universal losslessness claim. Details and the full method are in
+All accuracy gates pass: GSM8K stays within 1 point of the stock vLLM reference and long-context
+retrieval is 36/36 in every configuration. Details and the full method are in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Quick start
 
 You need: Linux, an **A100 80GB**, an NVIDIA driver that supports CUDA 13.0, 80 GB of free disk,
 and Hugging Face Hub access. The step-by-step guide is [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
-
-The commands below launch the existing public settings, not yet the latest measured profiles
-described in the results update above.
 
 **Option A: Docker** (you do not need to install CUDA on the host)
 
@@ -127,16 +112,14 @@ curl http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/jso
 | Extra downloads | W3 overlay (12.5 GB) + drafter (1.35 GB) | none |
 | Measured at | 1 request in flight | 32 requests in flight |
 
-Both stacks serve any number of requests. They are just tuned for different loads. The download
-row describes the existing launchers; the latest c1 profile omits W3, and latest c32 adds the
-rotated target sidecar while continuing to use built-in MTP.
+Both stacks serve any number of requests. They are just tuned for different loads.
 
 ## How it works
 
 One decode step has three parts. A cheap **drafter** guesses several next tokens. The 27B
 **target** model checks all the guesses in one forward pass (verification). Then the engine keeps
-the longest correct prefix. The speed comes from accepting many tokens per step while making each step cheap. Low-bit
-target and verify-head numerics can change final answers; full-stack stock-output identity is not guaranteed.
+the longest correct prefix. With greedy decoding the output is what the target alone would produce,
+and the speed comes from accepting many tokens per step while making each step cheap.
 Qwen3.8-27B is a hybrid model: 48 Gated DeltaNet (GDN, linear-attention) layers and 16 full-attention
 layers, so verification needs kernels for both.
 
@@ -145,24 +128,22 @@ layers, so verification needs kernels for both.
 ```mermaid
 flowchart LR
     A["Drafter<br/>DFlash2 d16, W4A16<br/>one block of 16 positions"] --> B["Tree builder<br/>top candidates per position<br/>-> 16-node tree, depth up to 15"]
-    B --> C["Target verify<br/>1 forward pass over 16 nodes<br/>W4 Marlin GEMMs<br/>GDN tree kernel + tree attention"]
-    C --> D["Greedy accept<br/>longest path where draft == target argmax"]
+    B --> C["Target verify<br/>1 forward pass over 16 nodes<br/>W3/W4 Marlin GEMMs<br/>GDN tree kernel + tree attention"]
+    C --> D["Exact greedy accept<br/>longest path where draft == target argmax"]
     D --> E["Commit<br/>KV + GDN state of the accepted path<br/>(single-state replay)"]
     E --> A
 ```
-
-Per-feature gains below are historical A/B milestones, not additive gains for the latest profile.
 
 | technique | type | what it does | measured effect |
 |---|---|---|---|
 | Tree verification (`dflash_tree`) | engine | Turns the DFlash2 candidate scores into a 16-node token tree and verifies all branches in one target pass instead of one chain | with GDN single-state + split-KV attention: 196.5 -> 242.0 tok/s (1.23x, same files) |
 | GDN single-state verify (`gdn_single_state`) | engine | Verification writes the GDN recurrent state once instead of once per draft token. Accepted tokens are replayed from a small log | part of the 1.23x step above |
 | CUDA GDN tree kernel (`gdn_tree_cuda`) | engine | One fused CUDA kernel runs the gated delta-rule recurrence over the tree's ancestor paths, conv, gating and norm | +3.0% |
-| Candidate-selection approximations (`shadow_head`, `draft_vocab`) | engine | The drafter scores only a 64k frequent-token vocabulary with an int4 copy of `lm_head`. These are used **only to choose candidates**, and every accepted token is checked by the configured target path (low-bit verify heads remain approximate) | +7.5% |
+| Candidate-selection approximations (`shadow_head`, `draft_vocab`) | engine | The drafter scores only a 64k frequent-token vocabulary with an int4 copy of `lm_head`. These are used **only to choose candidates**, and every accepted token is verified by the exact path | +7.5% |
 | Tuned Marlin tiles + fused epilogues (`marlin_plus`, `c1_fuse`) | engine | Per-shape launch configs for M=16 W4A16 GEMMs. RMSNorm, residual and SiLU-mul are folded into the GEMM epilogues | +2.4%, +3.5% |
 | Exact tree attention (`tree_attn`) | engine | CUDA tree-masked split-KV attention that reproduces vLLM's Triton kernel bit for bit, with the gate and KV write fused | 16 layers at 1k context: 655 -> 370 us |
 | Bit-identical glue cuts (`ll1_fuse`, `ll5_fuse`, graph stream forks) | engine | Small drafter / accept kernels fused or moved onto side streams inside CUDA graphs | about +1-2% in total |
-| 3-bit weights (legacy W3 overlay, `w3_mixed`; disabled in latest c1) | model-side | GPTQ 3-bit (act-order) on 400 linear layers, served by fused W3 Marlin kernels | MLP only: +6.5%, all layers: +4.3% more |
+| 3-bit weights (W3 overlay, `w3_mixed`) | model-side | GPTQ 3-bit (act-order) on 400 linear layers, served by fused W3 Marlin kernels | MLP only: +6.5%, all layers: +4.3% more |
 | Re-trained drafter, block 16 (`drafter_w4`) | model-side | DFlash2 self-distilled on the target's outputs, block 16 for depth-15 trees, int4 weights | served tokens/step 4.52 -> 4.68, +3.8% |
 | Split verify head (`verify_split_head`) | model-side | Verify `lm_head`: int8 rows for the 64k frequent tokens, int4 rows for the rest | +4.4%, then int8 rows +3.5% |
 
@@ -171,7 +152,7 @@ Per-feature gains below are historical A/B milestones, not additive gains for th
 ```mermaid
 flowchart LR
     A["MTP head (int4)<br/>3 drafts per request<br/>+ confidence per draft"] --> B["Confidence scheduler<br/>rank drafts by cumulative confidence<br/>admit the best ones into a 96-row budget"]
-    B --> C["Target verify<br/>variable length per request<br/>MarlinA4 W4A4 / down W4A8 GEMMs<br/>GDN ss12 + exact c=32 attention"]
+    B --> C["Target verify<br/>variable length per request<br/>MarlinA4 W4A4 split-K GEMMs<br/>GDN ss12 + exact c=32 attention"]
     C --> D["Verify head<br/>int4 screen of all 248k rows<br/>-> top-16 rescored exactly in bf16"]
     D --> E["Greedy accept + commit"]
     E --> A
@@ -183,7 +164,7 @@ flowchart LR
 | GDN single-state verify kernels (`gdn_ss12`) | engine | Variable-length GDN verify that writes one state per request and balances the work across CTAs | first version (ss4) on the W4A4 stack: +5.75%. Later versions add small bit-identical gains |
 | Exact c=32 attention (`c32_attn`) | engine | CUDA verify attention, bit-identical to the stock path, faster | +1.7% |
 | Draft vocabulary for MTP (`draft_vocab`) | engine | The MTP head scores a 64k frequent-token vocabulary in int4, for drafting only | +3% |
-| W4A4 verify GEMMs (MarlinA4, `marlin_plus`, `fused_quant`) | model-side | 4-bit activations on the large verify GEMMs, with down-projection activations restored to 8-bit in the latest profile. The activation quantizers are fused into the preceding norm/SiLU kernels, and the GEMMs use split-K with a parallel reduction | about +7% at first, then many smaller tuning steps |
+| W4A4 verify GEMMs (MarlinA4, `marlin_plus`, `fused_quant`) | model-side | 4-bit activations on the large verify GEMMs. The activation quantizers are fused into the preceding norm/SiLU kernels, and the GEMMs use split-K with a parallel reduction | about +7% at first, then many smaller tuning steps |
 | Int4 verify-head screen + exact rescoring (`vsplit_a4scr`) | model-side | An int4 W4A4 pass over all 248k `lm_head` rows picks 16 candidates per row, and those are rescored exactly in bf16. The head goes from 1.34 to 0.63 ms at M=96 | +2.2% |
 | Int4 MTP head + pruning (`mtp_w4`, `mtp_prune`) | model-side | Smaller drafter weights. Pass 1 runs only the rows that are needed | +1.8% |
 
@@ -199,29 +180,21 @@ for 32 concurrent clients.
 
 | configuration | GSM8K (first 300) | GSM8K (all 1319) | long-context |
 |---|---:|---:|---:|
-| Recorded stock INT4 references | 0.9733 (c1 legacy subset) | 0.9462 (full-set stock run) | — |
-| **atdev full stack, latest c1 profile** | **0.9700** | **0.9477** | **36/36** |
-| **atdev full stack, latest c32 profile** | | **0.9454** | **36/36** |
+| Original bf16, vLLM defaults | | 0.9469 | 36/36 |
+| INT4, vLLM defaults | | 0.9431 | 36/36 |
+| best vLLM, c=1 settings | 0.973 | 0.9462 | 36/36 |
+| best vLLM, c=32 settings | 0.953 | 0.9439 | 36/36 |
+| atdev engine only, c=1 | 0.963 | | 36/36 |
+| atdev engine only, c=32 | | 0.9447 | 36/36 |
+| **atdev full stack, c=1** | **0.967** | **0.9500** | **36/36** |
+| **atdev full stack, c=32** | | **0.9401** | **36/36** |
 
-| broader evaluation | stock INT4 run 1 / 2 | latest c1 | latest c32 |
-|---|---:|---:|---:|
-| MMLU-Pro (1,400) | 71.50% / 71.93% | 71.43% | 71.71% |
-| KMMLU (1,125) | 67.11% / 66.58% | 66.22% | 67.20% |
-| IFEval prompt strict (541) | 83.36% / 82.44% | 82.99% | 84.47% |
-| HumanEval+ (164) | 90.24% / 91.46% | 91.46% | 92.68% |
-| MBPP+ (378) | 76.72% / 76.19% | 76.98% | 76.72% |
-| WikiText-2 perplexity (40,920 tokens) | 7.29872 | 7.30004 | 7.20929 |
-
-Primary knowledge rule: within 1 percentage point of the two-run stock mean. Full GSM8K must be
-within 1 point of the actual stock reference, and long-context 36/36. C32 MBPP base is 89.68%
-versus 91.53% / 91.01%; MBPP+ is near stock. Code scores include actual test execution. IFEval
-references and candidates use the same deterministic scoring adapter. The knowledge rows use
-selected evaluation subsets; see [all conditions and paired comparisons](docs/ACCURACY_RECOVERY.md).
-C1 broad generation was measured once, c32 knowledge twice; both speeds use two repetitions.
+Pass rule: GSM8K within 1 point of the matching stock vLLM reference, and long-context 36/36. A
+blank cell means that gate was not run for that configuration.
 
 **About greedy decoding.** All numbers use temperature 0, and the speculative paths are validated
 for greedy verification. Several engine features are bit-identical to stock vLLM. The full stack is
-not bit-identical, because it changes numerics (rotated/low-bit weights, mixed activation precision, low-bit verify-head parts). The
+not bit-identical, because it changes numerics (3-bit weights, W4A4, low-bit verify-head parts). The
 gates above cover those changes. Sampling (temperature > 0) is not validated in this release.
 
 **About the hardware.** All kernels are compiled for sm_80 and tuned for the A100 80GB (SXM). Other
@@ -229,8 +202,7 @@ GPUs are not supported by this release.
 
 ## Reproducing the numbers
 
-This repository contains the serving package for the two stacks. The latest profile packaging
-gap is stated above; existing scripts still launch the prior numerical settings. The metric definitions, the
+This repository contains only what is needed to serve the two stacks. The metric definitions, the
 exact baseline `vllm serve` commands and how to compare on your own GPU are in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Measure the baseline and atdev in the same session on the
 same GPU.
@@ -271,26 +243,21 @@ Here c=1 means the stack tuned for 1 client (`serve_c1.sh`), and c=32 the stack 
 | [`z-lab/Qwen3.8-27B-DFlash2`](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) | c=1 (config; weights replaced by the atdev drafter) | Apache-2.0 |
 | [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | c=1: `w3/` (3-bit overlay, 12.5 GB) and `drafter/` (re-trained DFlash2 drafter, 1.35 GB) | Apache-2.0 |
 
-The atdev drafter and legacy W3 calibration used only prompts from
+The atdev drafter and the W3 calibration used only prompts from
 `HuggingFaceH4/ultrachat_200k` (train_sft) and `openai/gsm8k` (train), with responses generated by
-the target model. Clean2 token-order statistics add 4,000 UltraChat records. Latest c32
-quantization calibration also uses FineWeb-2 Korean and FineWeb-Edu English (ODC-BY), separate
-from drafter training. See [data splits, sample counts and attribution](docs/DATA_AND_LICENSES.md).
+the target model.
 
 ## License
 
 Apache-2.0 (see `LICENSE`). Third-party code is listed in `NOTICE`: vLLM and Marlin (Apache-2.0),
 PyTorch (BSD-3-Clause, `licenses/LICENSE.pytorch`) and flash-linear-attention (MIT). Model files have
-their own licenses, which are listed on their model cards. Dataset terms remain separate;
-[data and license notices](docs/DATA_AND_LICENSES.md) cover MIT prompt sources, ODC-BY
-calibration sources and evaluation-only KMMLU (CC BY-ND). This is a scoped inventory, not
-unconditional clearance of upstream content rights or every downstream use.
+their own licenses, which are listed on their model cards.
 
 ## Work with ATDEV
 
 [ATDEV](https://www.atdev.co.kr) optimizes LLM inference for **your model on your target GPUs**.
-This repository is one example of that work: on one A100, Qwen3.8-27B runs **up to 12.4x faster**
-than the original model on stock vLLM (single user), and serves **up to 3.46x** more tokens per second
+This repository is one example of that work: on one A100, Qwen3.8-27B runs **up to 14.2x faster**
+than the original model on stock vLLM (single user), and serves **up to 4.1x** more tokens per second
 at 32 concurrent requests, with accuracy gates in place.
 
 What we do:

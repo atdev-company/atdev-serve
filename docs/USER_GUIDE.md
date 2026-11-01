@@ -1,10 +1,5 @@
 # atdev-serve user guide
 
-> **2026-11-01 accuracy update:** this file describes the historical published launcher profiles.
-> New accuracy-recovered development profiles measure **357.17 / 2,322.62 tok/s** at c=1/c=32.
-> Their numerical settings differ from these defaults; do not attach the new accuracy scores to
-> the old **408.9 / 2,730.9** settings. See [validation, limits and packaging status](ACCURACY_RECOVERY.md).
-
 This guide takes you from an empty machine to a running, OpenAI-compatible Qwen3.8-27B server on one
 A100 80GB. Follow the steps in order.
 

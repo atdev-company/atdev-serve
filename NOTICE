@@ -52,22 +52,3 @@ Data files
 Model files used by the launch scripts are not part of this repository; see their model cards:
    RedHatAI/Qwen3.8-27B-INT4 (Apache-2.0), Qwen/Qwen3.8-27B (Apache-2.0),
    z-lab/Qwen3.8-27B-DFlash2 (Apache-2.0), atdev-company/Qwen3.8-27B-atdev-c1.
-
-Additional data provenance (2026-11-01)
-
-The clean drafter prompt sources are HuggingFaceH4/ultrachat_200k (train_sft, MIT)
-and openai/gsm8k (main/train, MIT). Clean2 token-order statistics add 4,000
-UltraChat prompts with target-generated responses.
-The accuracy-recovered c32 development sidecar additionally uses sampled
-FineWeb-2 Korean and FineWeb-Edu English for GPTQ calibration. Contains
-information from FineWeb-2 and FineWeb-Edu, made available by Hugging Face
-under the Open Data Commons Attribution License (ODC-BY) v1.0:
-https://opendatacommons.org/licenses/by/1-0/
-This database license does not grant all rights in individual underlying web pages.
-KMMLU (HAERAE-HUB, CC BY-ND 4.0) is evaluation-only; no question text or adapted
-prompts are included in the aggregate-results update.
-See docs/DATA_AND_LICENSES.md for source links, roles, counts and review scope.
-
-Full MIT texts: licenses/LICENSE.ultrachat (THUNLP, 2023),
-licenses/LICENSE.gsm8k (OpenAI, 2021), and
-licenses/LICENSE.flash-linear-attention (FLA authors, 2023-2026).

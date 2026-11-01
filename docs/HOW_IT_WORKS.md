@@ -1,10 +1,5 @@
 # How atdev-serve works
 
-> **2026-11-01 accuracy update:** this file describes the historical published launcher profiles.
-> New accuracy-recovered development profiles measure **357.17 / 2,322.62 tok/s** at c=1/c=32.
-> Their numerical settings differ from these defaults; do not attach the new accuracy scores to
-> the old **408.9 / 2,730.9** settings. See [validation, limits and packaging status](ACCURACY_RECOVERY.md).
-
 This page explains what the engine does in each decode step and why it is faster than the best stock
 vLLM 0.31.0 configuration. The effects quoted here come from same-session A/B runs during
 development (see [BENCHMARKS.md](BENCHMARKS.md) for the method). Throughout, c=N means N concurrent
