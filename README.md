@@ -2,6 +2,12 @@
 
 ## Up to 14.2× faster Qwen3.8-27B inference on a single A100, passing our accuracy gates
 
+> **Easy setup on vLLM — let your AI coding agent handle it.**
+> atdev-serve installs alongside unmodified **vLLM 0.31.0** and serves the familiar OpenAI-compatible API.
+> **[Open the AI installation & setup guide](https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md)** — give this link to your AI coding agent and ask it to install, launch your chosen C1/C32 profile, and verify the server on your GPU machine.
+> You can also follow the guide yourself. **Requires a supported NVIDIA GPU and CUDA environment**; the published profiles target an A100 80GB.
+
+
 - **14.2×** faster single-user decoding with **C1 fast (W3)** than the original bf16 model on stock vLLM (28.9 → **408.9 tok/s**)
 - **2.08×** faster than the best stock-vLLM configuration we could find (196.5 → 408.9 tok/s)
 - **4.0×** more throughput at 32 concurrent requests with **C32 Hadamard W4A4** than bf16 on stock vLLM, and **1.53×** more than the best vLLM settings (→ **2,688.1 tok/s**, single measured run)
