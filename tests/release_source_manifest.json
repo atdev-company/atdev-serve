@@ -1,0 +1,192 @@
+{
+  "baseline_release_commit": "cfa64f055f96a46397de643d283b61b67ce5bbd4",
+  "research_a4_sim_sha256": "549c961ecd1935f3e88ff5e7cd1398fc198af4bf37d5381c0edf9fb818a103cc",
+  "exact_CUDA_copies": [
+    {
+      "research_source": "src/atdev_serve/csrc/acc_c32/a4_had.cu",
+      "release_path": "src/atdev_serve/csrc/acc_c32/a4_had.cu",
+      "sha256": "19248fab51212bd099957ed3086fc168e07af08a88c277b5e5a73f44abee2705",
+      "byte_exact": true
+    },
+    {
+      "research_source": "src/atdev_serve/csrc/c32_prod_h.cu",
+      "release_path": "src/atdev_serve/csrc/c32_prod_h.cu",
+      "sha256": "63df57f16f5e3762f808d3cc9e9c8dae386cd122d384e9b8ea9f9a5b23210f75",
+      "byte_exact": true
+    },
+    {
+      "research_source": "src/atdev_serve/csrc/c32c_csum_h.cu",
+      "release_path": "src/atdev_serve/csrc/c32c_csum_h.cu",
+      "sha256": "e19845b5c43a37e68d85272044e248e0dc76fe5dc517976d82bbcf0589f4a55a",
+      "byte_exact": true
+    },
+    {
+      "research_source": "src/atdev_serve/csrc/gdn_var/gdn_ss12h.cu",
+      "release_path": "src/atdev_serve/csrc/gdn_var/gdn_ss12h.cu",
+      "sha256": "652dc492abb50cdc0f964f4351aea4a28c08748322dae27e26bb5c33bc77fd3b",
+      "byte_exact": true
+    }
+  ],
+  "selected_function_ports": [
+    {
+      "name": "had_ext",
+      "research_source_sha256": "ab2cf1d94d8a0b4f2063e816c1aecd5625928f3a4e0ceac2566f376778739767",
+      "release_source_sha256": "ab2cf1d94d8a0b4f2063e816c1aecd5625928f3a4e0ceac2566f376778739767",
+      "ast_identical": true
+    },
+    {
+      "name": "_register_real_had2",
+      "research_source_sha256": "301c6b2dcbdcb18b4af7aa0a73ef65df70bfa260bd0caad0411cdca1e7e1e0c6",
+      "release_source_sha256": "301c6b2dcbdcb18b4af7aa0a73ef65df70bfa260bd0caad0411cdca1e7e1e0c6",
+      "ast_identical": true
+    },
+    {
+      "name": "_had3_pack_store",
+      "research_source_sha256": "5ca6e98186cfb2a732767ac9abce6de08db623ed80ac10005a4589e5fb94d290",
+      "release_source_sha256": "839cafa94cf203805335163aaa9e00d0a8bd217a91630bb285e26403df600f19",
+      "ast_identical": false
+    },
+    {
+      "name": "_int8_rot",
+      "research_source_sha256": "7a0dadb096036f8f890aa0d67479b4f4681113533ff655f945d4390beefca751",
+      "release_source_sha256": "7a0dadb096036f8f890aa0d67479b4f4681113533ff655f945d4390beefca751",
+      "ast_identical": true
+    },
+    {
+      "name": "_register_real_had3",
+      "research_source_sha256": "4cb458f6d3bc69e651f905bd31a8bbfb53c92321382cf544642a9f77f7fb2986",
+      "release_source_sha256": "cf127fdca6a15eb7e90aa3c9fd0f4fce4b2b739a566eeb74098255c9a1e66f7c",
+      "ast_identical": false
+    }
+  ],
+  "compatibility_changes": [
+    "release silu_quant uses3arguments; retain exact n_next routing",
+    "release fixedMK1 producers imply Had pack MK=True",
+    "release GDN BF16-state ABI23/27 adapted to selected CUDA26/30 with qint8=False,ng=1,dbg=0",
+    "Triton fallback NGB16 only when a4_sim+had3 enabled; original nonHad NGB8 unchanged",
+    "loader resolves oneHub file, validates exactQwen800schema andfullcheckpointcoverage; no experimental/fake modes"
+  ],
+  "source_SHA256": {
+    "serve_c1.sh": "93e71eba03e3afe14c296b491e4af455041721c54c288337da606c0c4779b84b",
+    "serve_c1_accuracy.sh": "36804e47936acfc1b852410bac0794f44793737c2a664d7b633b5c139a380cac",
+    "serve_c32.sh": "c7815a77d092d78792c5b9f50504ec7d20182dc8ed49db0672b49b3275f5cbcb",
+    "docker/Dockerfile": "aeaefad922a04361d0f2b5c04e7d06e026e646fe91bf0ed75225e3d3e5babb3c",
+    "docker/entrypoint.sh": "03305dead68d8f98b7ec30039f79285f1259f42f717f9e545f1092e4718c63f4",
+    "docker-compose.yml": "b7fa799bfcbea51237d19bc2beea08c956ae3172121154a1da7c74e06a62f71e",
+    "src/atdev_serve/a4_sim.py": "344602ff03bfe0144aefd7e6200170507fa1be33f45a39ba01473c058e054360",
+    "src/atdev_serve/register.py": "bb0029b5f674ee6ceda3c9a7b6e3ca9528e0fd7af7af0ab5e7d4c73ff5f0e04d",
+    "src/atdev_serve/gdn_single_state.py": "e7eacb51ff602df6483c5131c28330cecd9789ad709946c91c5ea081fb205273",
+    "src/atdev_serve/fused_quant.py": "75b8a055c169935d71bfdf51740ab1eeefc69d1de383edee7f36e7cfb368230d",
+    "tests/test_release_profiles.py": "678c3ff46d745a4e61d3d8dd975dade0f3ee30fc795efc980a65631718ae0e99",
+    "tests/test_hadamard_release.py": "401979417f6d3ba6eee4d25f816d93dcb8324ac89da1908807da583c5d66d526",
+    "src/atdev_serve/csrc/acc_c32/a4_had.cu": "19248fab51212bd099957ed3086fc168e07af08a88c277b5e5a73f44abee2705",
+    "src/atdev_serve/csrc/c32_prod_h.cu": "63df57f16f5e3762f808d3cc9e9c8dae386cd122d384e9b8ea9f9a5b23210f75",
+    "src/atdev_serve/csrc/c32c_csum_h.cu": "e19845b5c43a37e68d85272044e248e0dc76fe5dc517976d82bbcf0589f4a55a",
+    "src/atdev_serve/csrc/gdn_var/gdn_ss12h.cu": "652dc492abb50cdc0f964f4351aea4a28c08748322dae27e26bb5c33bc77fd3b",
+    "src/atdev_serve/c1_fuse.py": "e72a6d323164067039f1aecf8236f0912d884664d03a13727f0ebbd78cbb9e38",
+    "src/atdev_serve/c1_accuracy.py": "4982e7b67900a384ac591995fdb4e31c6ae613b36df2081d12e0692ade81239e",
+    "src/atdev_serve/c1_norm.py": "82a6732ef772506da5f8069e8f5fd9abdf6dabf074afbc2448e062c92fc39832",
+    "src/atdev_serve/marlin_c1_build.py": "c28d16d8358cd0ea0e53ae1ce702710fe6ed829d7999f6fbda454c0a67236238",
+    "tests/test_c1_accuracy_registration.py": "54b2209c75b95003e568992bec824d79b35a1aa183740bfd1d8e669bfd687cec",
+    "tests/cpu_registry_help.py": "25a13029fba013700ef5271e40ccce819f4c83af1c42c4a65b3e41ef25371d56"
+  },
+  "profile_evidence": {
+    "c1_accuracy": "research results/E9-bw3fx-accnow3b-s1-96/args.txt andops/acc_c1_bench.sh; fastsameargv/flags; onlyremoveW3 feature+pointer",
+    "c32": "research ops/eval_broad.sh st_c32h +bench/exp_p1b.sh fqts4k3di1rcalbcpsz +results/P1b-fqts4k3di1rcalbcpsz-acchad3_hadw_gptq_d10/server.log",
+    "selected_A8_64_96_128_cfg_semantics_equal": true,
+    "clean2_token_order_byte_exact": true
+  },
+  "scope": "runtime/source provenance only; GPU execution/performance not reverified by implementation agent; no weights/researchCLI copied, no public publication",
+  "c1_accuracy_W4_repair": {
+    "baseline_commit": "8e67ac94bb7ff52b2d459ead3490214f9a472f87",
+    "cause": "release removed the measured W4 path, not only a registration guard; restore dedicated W4 module instead of dropping c1_fuse",
+    "existing_fast_definitions_preserved": {
+      "src/atdev_serve/c1_fuse.py": {
+        "existing_changed_definitions": [
+          "register"
+        ],
+        "added_definitions": []
+      },
+      "src/atdev_serve/c1_norm.py": {
+        "existing_changed_definitions": [],
+        "added_definitions": [
+          "lin_cons",
+          "lin_prod",
+          "mc1",
+          "permute_gu_marlin"
+        ]
+      },
+      "src/atdev_serve/marlin_c1_build.py": {
+        "existing_changed_definitions": [],
+        "added_definitions": [
+          "load"
+        ]
+      }
+    },
+    "measured_research_W4_functions": [
+      {
+        "function": "_fused_ok",
+        "AST_identical": true
+      },
+      {
+        "function": "_mp",
+        "AST_identical": true
+      },
+      {
+        "function": "e6_prod",
+        "AST_identical": true
+      },
+      {
+        "function": "_e6_prod_fake",
+        "AST_identical": true
+      },
+      {
+        "function": "e6_cons",
+        "AST_identical": true
+      },
+      {
+        "function": "e6_cons_r",
+        "AST_identical": true
+      },
+      {
+        "function": "_e6_cons_fake",
+        "AST_identical": true
+      },
+      {
+        "function": "_e6_cons_r_fake",
+        "AST_identical": true
+      },
+      {
+        "function": "_model_ok",
+        "AST_identical": true
+      },
+      {
+        "function": "model_forward",
+        "AST_identical": true
+      },
+      {
+        "function": "mc1",
+        "AST_identical": true
+      },
+      {
+        "function": "lin_prod",
+        "AST_identical": true
+      },
+      {
+        "function": "lin_cons",
+        "AST_identical": true
+      },
+      {
+        "function": "permute_gu_marlin",
+        "AST_identical": true
+      }
+    ],
+    "research_c1_fuse_sha256": "058ca9671bf50bb1e3efeb17985f7e2111fc70cb9f7f295cdc63a584564589b7",
+    "research_c1_norm_sha256": "e741a9dc54ba1a53ba3ead4a8b8290861ba438a1f3698616545d0d761c586835",
+    "conditional_path": "c1_fuse.register dispatches to W4-only accuracy module iff w3_mixed absent; fast W3 implementation left intact",
+    "W4_selected_defaults": "BA_STREAM2/CORE_EMPTY/sidefork+BAP/gatedattention, W4gate-up interleave; existing marlin_c1 sources/modes1,2,3/tile3xstages4,6; existing release CUDA specialized math, not byte-identical full research sources",
+    "CLI_help": "actual vLLM parser + whole actual accuracy registry exercised with localdraftfolder; hardware target/JIT only mocked, no model weights or GPU",
+    "C32_sources_changed": false,
+    "all_CUDA_sources_changed": false
+  }
+}

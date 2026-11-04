@@ -223,3 +223,41 @@ def gu_perm_index(n_half: int, dev) -> torch.Tensor:
     """n64-tile order of the interleaved gate_up weight: tile 2t = gate tile t, 2t + 1 = up tile t."""
     t = n_half // 64
     return torch.stack([torch.arange(t, device=dev), torch.arange(t, device=dev) + t], 1).reshape(-1)
+
+
+# W4 accuracy profile: measured Marlin norm/SiLU epilogue wrappers.
+def mc1(mode: int):
+    from atdev_serve import marlin_c1_build
+    return marlin_c1_build.load(mode)
+
+def lin_prod(x, wq, ws, n, k, res, nw):
+    """producer: h = x @ W (n = norm width) -> (a = bf16((h + res) * (1 + nw)), res_out = bf16(h + res), P)."""
+    m = x.shape[0]
+    cfg = mp_cfg(n, k, m)
+    t = n // cfg[1]
+    a = torch.empty((m, n), dtype=torch.bfloat16, device=x.device)
+    ro = torch.empty_like(a)
+    p = torch.empty((m, t), dtype=torch.float32, device=x.device)
+    b = _fbufs(x.device)
+    mc1(1).gemm_epi(x, wq, ws, a, b["locks"], b["c_tmp"], n, k, cfg, 1, R=res, W=nw, C2=ro, P=p)
+    return a, ro, p
+
+def lin_cons(a, wq, ws, n, k, p, n_norm, eps, silu=False, want_r=False):
+    """consumer: y = diag(rstd) (a @ W) [silu pair -> [M, n/2]]; rstd from the producer partials p [M, T]."""
+    m = a.shape[0]
+    cfg = mp_cfg(n, k, m)
+    out = torch.empty((m, n // 2 if silu else n), dtype=torch.bfloat16, device=a.device)
+    r = torch.empty((m,), dtype=torch.float32, device=a.device) if want_r else None
+    b = _fbufs(a.device)
+    mc1(3 if silu else 2).gemm_epi(a, wq, ws, out, b["locks"], b["c_tmp"], n, k, cfg, 3 if silu else 2, Pin=p,
+                   T_in=p.shape[1], n_norm=n_norm, eps=eps, Rout=r)
+    return out, r
+
+def permute_gu_marlin(wq: torch.Tensor, ws: torch.Tensor, n: int):
+    """Marlin-layout gate_up weight [K/16, 2N] int32 and scales [G, N] -> n64-tile interleaved copies."""
+    idx = gu_perm_index(n // 2, wq.device)
+    kt = wq.shape[0]
+    wq2 = wq.view(kt, n // 64, -1)[:, idx].reshape(wq.shape).contiguous()
+    g = ws.shape[0]
+    ws2 = ws.view(g, n // 64, 64)[:, idx].reshape(ws.shape).contiguous()
+    return wq2, ws2

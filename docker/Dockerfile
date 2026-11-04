@@ -39,9 +39,9 @@ COPY src ./src
 RUN pip install . \
  && python -c "import atdev_serve, vllm; assert vllm.__version__ == '${VLLM_VERSION}'"
 
-COPY serve_c1.sh serve_c32.sh ./
+COPY serve_c1.sh serve_c1_accuracy.sh serve_c32.sh ./
 COPY docker/entrypoint.sh /usr/local/bin/atdev-entrypoint
-RUN chmod +x serve_c1.sh serve_c32.sh /usr/local/bin/atdev-entrypoint
+RUN chmod +x serve_c1.sh serve_c1_accuracy.sh serve_c32.sh /usr/local/bin/atdev-entrypoint
 
 EXPOSE 8100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=3h --retries=3 \

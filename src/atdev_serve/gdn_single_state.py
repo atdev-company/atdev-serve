@@ -323,10 +323,20 @@ def cuda_ext():
         from torch.utils.cpp_extension import load
 
         src = os.path.join(os.path.dirname(__file__), "csrc", "gdn_var", "gdn_ss12.cu")
+        had3 = (os.environ.get("ATDEV_A4_REAL") == "had3"
+                    and "a4_sim" in os.environ.get("ATDEV_OPT", "").split(","))
+        if had3:
+            src = os.path.join(os.path.dirname(__file__), "csrc", "gdn_var", "gdn_ss12h.cu")
+            requested = os.environ.get("ATDEV_GDN_SRC", src)
+            if os.path.realpath(requested) != os.path.realpath(src):
+                raise ValueError("had3 requires the selected gdn_ss12h.cu kernel")
         name = "atdev_gdn_ss_var_" + hashlib.sha256(open(src, "rb").read()).hexdigest()[:8]
         _EXT = load(name=name, sources=[src], verbose=False,
                     extra_cuda_cflags=["-O3", "-gencode=arch=compute_80,code=sm_80",
                                        "-std=c++17", "--expt-relaxed-constexpr"])
+        if had3:
+            from atdev_serve.a4_sim import GDNAdapter
+            _EXT = GDNAdapter(_EXT)
     return _EXT
 
 

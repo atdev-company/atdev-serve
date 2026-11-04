@@ -343,7 +343,7 @@ def norm_quant(x: torch.Tensor, residual: torch.Tensor | None, weight: torch.Ten
         from atdev_serve import marlin_plus as mp
         b = mp.bufs(dev)
         tmb = ent["cfg"][4]
-        ngb = 8  # 128-column groups per program
+        ngb = 16 if (os.environ.get("ATDEV_A4_REAL") == "had3" and "a4_sim" in os.environ.get("ATDEV_OPT", "").split(",")) else 8  # selected Hadamard tl.dot needs16 groups
         _norm_a4_chunk_kernel[(16 * tmb, triton.cdiv(n // 128, ngb))](
             x, x.stride(0), r, r.stride(0), weight, gs, xb, xb.stride(0) if want_bf16 else 0,
             ro, ro.stride(0), b["a4_pk"], b["a4_s"], m, n, eps, 16 * tmb, tmb,
@@ -390,7 +390,7 @@ def silu_quant(gu: torch.Tensor, gs: torch.Tensor, n_next: int = 0) -> tuple[tor
             from atdev_serve import c32_prod
             c32_prod.silu_a4(gu, gs, b["a4_pk"], b["a4_s"], m, n, 16 * tmb, tmb)
             return q, s
-        ngb = 8
+        ngb = 16 if (os.environ.get("ATDEV_A4_REAL") == "had3" and "a4_sim" in os.environ.get("ATDEV_OPT", "").split(",")) else 8
         _silu_a4_kernel[(16 * tmb, triton.cdiv(n // 128, ngb))](
             gu, gu.stride(0), gs, b["a4_pk"], b["a4_s"], m, n, 16 * tmb, tmb, NGB=ngb, num_warps=4)
         return q, s
@@ -435,9 +435,10 @@ def gate_quant(a: torch.Tensor, g: torch.Tensor, gs: torch.Tensor, n_next: int =
             from atdev_serve import c32_prod
             c32_prod.gate_a4(a, g, gs, b["a4_pk"], b["a4_s"], m, n, 16 * tmb, tmb)
             return q, s
-        _gate_a4_kernel[(16 * tmb, triton.cdiv(n // 128, 8))](
+        ngb = 16 if (os.environ.get("ATDEV_A4_REAL") == "had3" and "a4_sim" in os.environ.get("ATDEV_OPT", "").split(",")) else 8
+        _gate_a4_kernel[(16 * tmb, triton.cdiv(n // 128, ngb))](
             a, a.stride(0), g, g.stride(0), gs, b["a4_pk"], b["a4_s"], m, n, 16 * tmb, tmb,
-            NGB=8, num_warps=4)
+            NGB=ngb, num_warps=4)
         return q, s
     if m:
         _gate_quant_kernel[(m,)](a, a.stride(0), g, g.stride(0), gs, q, q.stride(0), s, n,

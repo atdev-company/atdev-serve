@@ -83,3 +83,20 @@ def build(name_prefix: str, srcs: list[str], include: list[str], defs: list[str]
         extra_include_paths=include,
         extra_cflags=["-O3", "-std=c++17", "-DMARLIN_NAMESPACE_NAME=marlin_plus"],
         extra_cuda_cflags=["-O3", "-std=c++17", "-DMARLIN_NAMESPACE_NAME=marlin_plus", *defs, *CUDA_FLAGS])
+
+
+_MODS_W4 = {}
+
+
+def load(mode: int, verbose: bool = False):
+    """W4A16 M=16 fused epilogues; existing W3 generator/build entry points unchanged."""
+    if mode not in (1, 2, 3):
+        raise ValueError("W4 c1 epilogue mode must be1,2,3")
+    if mode not in _MODS_W4:
+        from atdev_serve import marlin_plus_build
+        insts = sorted({(0, 1, 0) + c + (st,) for c in ((64, 128, 128), (128, 64, 128), (128, 128, 256)) for st in (4, 6)})
+        gen = os.path.join(CSRC, "gen_w4", f"m{mode}")
+        srcs = generate(gen, insts) + [os.path.join(CSRC, "mp_host.cu")]
+        defs = marlin_plus_build.defines() + [f"-DE6_MODE={mode}", "-DE6_RSTD_AT=0", "-DE6_SILU_SMEM=1", "-DE6_SILU=1"]
+        _MODS_W4[mode] = build(f"atdev_marlin_c1w4_m{mode}_", srcs, [gen, CSRC], defs, [__file__], verbose)
+    return _MODS_W4[mode]

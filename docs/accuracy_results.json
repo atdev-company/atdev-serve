@@ -1,0 +1,276 @@
+{
+  "release_date": "2026-11-04",
+  "hardware": "one A100 80GB SXM, sm80",
+  "vllm": "0.31.0",
+  "decoding": "greedy, thinking disabled for accuracy",
+  "profiles": {
+    "c1_fast": {
+      "mmlupro": {
+        "acc": 0.6914285714285714,
+        "n": 1400,
+        "se": 0.012344897790493284
+      },
+      "kmmlu": {
+        "acc": 0.6391111111111111,
+        "n": 1125,
+        "se": 0.014318538062104652
+      },
+      "ifeval_prompt_strict": {
+        "acc": 0.8207024029574861,
+        "n": 541,
+        "se": 0.01649230867269474
+      },
+      "ifeval_prompt_loose": {
+        "acc": 0.8484288354898336,
+        "n": 541,
+        "se": 0.015417621205018592
+      },
+      "ifeval_inst_strict": {
+        "acc": 0.8764988009592326,
+        "n": 834,
+        "se": 0.011392741014051955
+      },
+      "ifeval_inst_loose": {
+        "acc": 0.8968824940047961,
+        "n": 834,
+        "se": 0.010530547431149048
+      },
+      "humaneval_base": {
+        "acc": 0.9451219512195121,
+        "n": 164,
+        "se": 0.01778366757945133
+      },
+      "humaneval_plus": {
+        "acc": 0.8841463414634146,
+        "n": 164,
+        "se": 0.024991655722128053
+      },
+      "mbpp_base": {
+        "acc": 0.8968253968253969,
+        "n": 378,
+        "se": 0.01564568034054222
+      },
+      "mbpp_plus": {
+        "acc": 0.7566137566137566,
+        "n": 378,
+        "se": 0.022071875129607198
+      },
+      "_trunc": {
+        "mmlupro": 230,
+        "kmmlu": 106,
+        "ifeval": 7,
+        "humaneval": 1,
+        "mbpp": 3
+      },
+      "ppl": {
+        "task": "ppl",
+        "tokens": 40920,
+        "ppl": 8.219982273206352,
+        "error": null
+      }
+    },
+    "c1_accuracy": {
+      "mmlupro": {
+        "acc": 0.7142857142857143,
+        "n": 1400,
+        "se": 0.01207363221040738
+      },
+      "kmmlu": {
+        "acc": 0.6622222222222223,
+        "n": 1125,
+        "se": 0.014100715525336812
+      },
+      "ifeval_prompt_strict": {
+        "acc": 0.8299445471349353,
+        "n": 541,
+        "se": 0.01615180960292143
+      },
+      "ifeval_prompt_loose": {
+        "acc": 0.8632162661737524,
+        "n": 541,
+        "se": 0.014773330118331773
+      },
+      "ifeval_inst_strict": {
+        "acc": 0.8800959232613909,
+        "n": 834,
+        "se": 0.011248612444143954
+      },
+      "ifeval_inst_loose": {
+        "acc": 0.907673860911271,
+        "n": 834,
+        "se": 0.01002407313031682
+      },
+      "humaneval_base": {
+        "acc": 0.9573170731707317,
+        "n": 164,
+        "se": 0.015784581583674646
+      },
+      "humaneval_plus": {
+        "acc": 0.9146341463414634,
+        "n": 164,
+        "se": 0.021819453823797155
+      },
+      "mbpp_base": {
+        "acc": 0.9206349206349206,
+        "n": 378,
+        "se": 0.01390312891037682
+      },
+      "mbpp_plus": {
+        "acc": 0.7698412698412699,
+        "n": 378,
+        "se": 0.021650524456326623
+      },
+      "_trunc": {
+        "mmlupro": 239,
+        "kmmlu": 100,
+        "ifeval": 8,
+        "humaneval": 4,
+        "mbpp": 4
+      },
+      "ppl": {
+        "task": "ppl",
+        "tokens": 40920,
+        "ppl": 7.300041095943703,
+        "error": null
+      }
+    },
+    "c32_hadamard_w4a4": {
+      "mmlupro": {
+        "acc": 0.7278571428571429,
+        "n": 1400,
+        "se": 0.01189481046654319
+      },
+      "kmmlu": {
+        "acc": 0.6506666666666666,
+        "n": 1125,
+        "se": 0.014214219970955707
+      },
+      "ifeval_prompt_strict": {
+        "acc": 0.8243992606284658,
+        "n": 541,
+        "se": 0.016358117912323084
+      },
+      "ifeval_prompt_loose": {
+        "acc": 0.8650646950092421,
+        "n": 541,
+        "se": 0.014688872425063637
+      },
+      "ifeval_inst_strict": {
+        "acc": 0.8800959232613909,
+        "n": 834,
+        "se": 0.011248612444143954
+      },
+      "ifeval_inst_loose": {
+        "acc": 0.9100719424460432,
+        "n": 834,
+        "se": 0.009906093976131245
+      },
+      "humaneval_base": {
+        "acc": 0.9512195121951219,
+        "n": 164,
+        "se": 0.016820601446280427
+      },
+      "humaneval_plus": {
+        "acc": 0.8963414634146342,
+        "n": 164,
+        "se": 0.02380221402623906
+      },
+      "mbpp_base": {
+        "acc": 0.9206349206349206,
+        "n": 378,
+        "se": 0.01390312891037682
+      },
+      "mbpp_plus": {
+        "acc": 0.7804232804232805,
+        "n": 378,
+        "se": 0.02129179884074442
+      },
+      "_trunc": {
+        "mmlupro": 199,
+        "kmmlu": 90,
+        "ifeval": 10,
+        "humaneval": 1,
+        "mbpp": 4
+      },
+      "ppl": {
+        "task": "ppl",
+        "tokens": 40920,
+        "ppl": 7.209286539678632,
+        "error": null
+      }
+    }
+  },
+  "stock_int4_reference": {
+    "broad_accuracy_two_run_mean": {
+      "mmlupro": 0.7171428571428571,
+      "kmmlu": 0.6684444444444444,
+      "ifeval_prompt_strict": 0.8290203327171903,
+      "ifeval_prompt_loose": 0.865988909426987,
+      "ifeval_inst_strict": 0.8788968824940048,
+      "ifeval_inst_loose": 0.9088729016786571,
+      "humaneval_base": 0.9573170731707317,
+      "humaneval_plus": 0.9085365853658537,
+      "mbpp_base": 0.9126984126984127,
+      "mbpp_plus": 0.7645502645502645
+    },
+    "ppl": 7.298721320804553,
+    "gsm1319": {
+      "correct": 1248,
+      "n": 1319,
+      "concurrency": 32
+    }
+  },
+  "speed": {
+    "c1_fast": {
+      "published_mean_decode_tps": 408.9,
+      "published_max_vs_bf16": 14.2,
+      "published_vs_best_vllm": 2.08,
+      "concurrency": 1
+    },
+    "c1_accuracy": {
+      "mean_decode_tps": 357.17286955935526,
+      "runs": [
+        357.1408309775519,
+        357.20490814115857
+      ],
+      "concurrency": 1
+    },
+    "c32_hadamard_w4a4": {
+      "aggregate_output_tps": 2688.1288334519177,
+      "runs": 1,
+      "concurrency": 32
+    }
+  },
+  "gsm1319": {
+    "c1_fast": 1253,
+    "c1_accuracy": 1250,
+    "c32_hadamard_w4a4": 1249,
+    "n": 1319
+  },
+  "gsm300": {
+    "c1_fast": 290,
+    "c1_accuracy": 291,
+    "n": 300
+  },
+  "longctx": {
+    "c1_fast": {
+      "correct": 36,
+      "n": 36
+    },
+    "c1_accuracy": {
+      "correct": 36,
+      "n": 36
+    },
+    "c32_hadamard_w4a4": {
+      "correct": 36,
+      "n": 36
+    }
+  },
+  "limits": [
+    "Observed scores, not statistical equivalence or universal losslessness.",
+    "C1 accuracy has a speed cost and is not bit-identical to stock INT4.",
+    "C32 speed is one saved run; historical baselines were not all remeasured together.",
+    "C32 final Korean score uses repeat65.0667%, not initial66.0444%.",
+    "Original14.2x maximum is C1 fast only; research-only recovery candidates are not included."
+  ]
+}

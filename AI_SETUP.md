@@ -15,9 +15,9 @@ Repository: `https://github.com/atdev-company/atdev-serve`. Human guide: `docs/U
   `CUDA_VISIBLE_DEVICES=<index>` for every command and do not change it afterwards. A busy GPU means
   more than 1 GB already used or any compute process listed by `nvidia-smi`.
 * **R3. Long first start.** The first server start compiles CUDA kernels and downloads model files
-  (about 32 GiB for c1, about 18 GiB for c32; the stacks are defined in Phase 1). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
+  (about 32 GiB for C1 fast; C1 accuracy skips the 12.5 GB W3 overlay; C32 needs the INT4 base plus a roughly 12.5 GB Hadamard sidecar; profiles are defined in Phase 1). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
 * **R4. Paths.** Work inside the repository root (`$REPO`). Use absolute paths in your own scripts.
-* **R5. Secrets.** If a Hugging Face token is needed, ask the user to provide it or run
+* **R5. Secrets.** Reuse an existing authorized Hub login or user-provided `HF_TOKEN` first. If access is still needed, ask the user to provide it or run
   `huggingface-cli login`. Never print it or write it to files in the repository.
 
 ## Phase 0: get the repository
@@ -30,6 +30,17 @@ test -f pyproject.toml && test -f serve_c1.sh && echo REPO_OK
 ```
 
 Expected: `REPO_OK`.
+
+For an existing installation, preserve local changes, update the checkout with `git pull --ff-only`,
+then refresh the installed plugin explicitly (the package version may still be `0.1.0`):
+
+```bash
+source "$REPO/atdev-env.sh"
+python -m pip install --no-deps --force-reinstall "$REPO"
+```
+
+Restart only a server you own. The current C32 profile requires its additional Hadamard sidecar;
+C1 accuracy needs the existing drafter but no W3 overlay. Docker users rebuild with `--build`.
 
 ## Phase 1: preflight (read-only)
 
@@ -54,7 +65,7 @@ GPUs: judge P2 / P4 only by the row for the chosen index.
 
 **Choose the stack.** `c1` is tuned for c=1, i.e. 1 client (a single user, one request at a time);
 `c32` is tuned for c=32, i.e. 32 concurrent clients (32 requests in flight). Use `c1` (lowest latency
-per request) unless the user asked for many concurrent users or for throughput, in which case use `c32`. Set `STACK=c1` or `STACK=c32`.
+per request, original W3 maximum-speed profile) unless the user asks for improved measured broad accuracy: then use `c1-accuracy`, which disables W3 but retains the same drafter and engine. For many concurrent users or throughput, use `c32`, which ships only Hadamard W4A4 with built-in MTP. Set `STACK=c1`, `STACK=c1-accuracy`, or `STACK=c32`. Do not silently change a user-selected profile. The up-to-14.2x headline belongs only to C1 fast; inspect [docs/ACCURACY.md](docs/ACCURACY.md) for all score and speed differences.
 
 ## Phase 2A: install with Docker
 
@@ -112,7 +123,13 @@ nvcc --version | grep -q 'release 13.0' && echo NVCC_OK                 # -> NVC
 source "$REPO/atdev-env.sh"
 export CUDA_VISIBLE_DEVICES=<gpu index from P4>
 LOG="$REPO/server_$STACK.log"
-nohup setsid bash -c 'echo $$ > "$0"; exec ./serve_'"$STACK"'.sh' "$REPO/server_$STACK.pid" > "$LOG" 2>&1 &
+case "$STACK" in
+  c1) START_SCRIPT=serve_c1.sh ;;
+  c1-accuracy) START_SCRIPT=serve_c1_accuracy.sh ;;
+  c32) START_SCRIPT=serve_c32.sh ;;
+  *) echo "Choose c1, c1-accuracy or c32"; exit 2 ;;
+esac
+nohup setsid bash -c 'echo $$ > "$1"; exec "./$2"' _ "$REPO/server_$STACK.pid" "$START_SCRIPT" > "$LOG" 2>&1 &
 # the PID file holds the process-group leader (used by Phase 8)
 ```
 
@@ -143,6 +160,12 @@ While waiting, these log lines are expected, in roughly this order:
 3. Model download (first start only), then weight loading
 4. `torch.compile` and FlashInfer `Building JIT module sampling`
 5. CUDA graph capture, then `Application startup complete`
+
+Verify the selected profile before accepting readiness:
+
+- `c1`: W3 mixed loading must be enabled; both original W3 sidecars and the quantized d16 drafter are used.
+- `c1-accuracy`: W3 mixed loading must be absent; the same d16 drafter remains enabled. No W3 overlay should be requested or downloaded.
+- `c32`: Hadamard W4A4 (`ATDEV_A4_REAL=had3`) and the selected sidecar must load. Built-in MTP remains enabled; no DFlash/external drafter is added. Do not fall back to unrotated W4A4 or W4A8 after an error.
 
 Triton JIT warnings on the first request are normal.
 
@@ -182,7 +205,7 @@ PY
 ```
 
 Expected on an idle A100 80GB with the `c1` stack: a few hundred tok/s for one request (the
-published 408.9 is the mean over 96 prompts; single prompts vary). The `c32` stack is tuned for many
+published 408.9 is the original C1-fast mean over 96 prompts; single prompts vary). C1 accuracy measured 357.17 tok/s over two repetitions. C32 Hadamard measured 2,688.13 aggregate tok/s at c=32 in one run; do not compare that with a single-request speed. The `c32` stack is tuned for many
 concurrent requests, so one request alone is slower there. The full measurement method is in
 `docs/BENCHMARKS.md`.
 
@@ -198,7 +221,7 @@ concurrent requests, so one request alone is slower there. The full measurement 
 | F6 | log stalls at `Waiting for lock` / `waiting for ... lock` | a stale build lock from an interrupted start. Stop the server, run `find "${TORCH_EXTENSIONS_DIR:-$HOME/.cache/torch_extensions}" -name lock -delete`, and restart |
 | F7 | `CUDA out of memory` while loading | the GPU is not free (P4). Pick another GPU or ask the user (R1) |
 | F8 | `GatedRepoError` / `401` / `RepositoryNotFound` | ask the user for HF access / token (R5), then retry |
-| F9 | no internet | the models must already be local: set `MODEL=<dir>` (and for c1 `W3_OVERLAY=<dir>/w3/w3_gptqact_d30_mlpo.safetensors,<dir>/w3/w3_gptqact_d30_qkv.safetensors` `DRAFTER=<dir>/drafter`, where `<dir>` is a local copy of `atdev-company/Qwen3.8-27B-atdev-c1`) and `HF_HUB_OFFLINE=1` |
+| F9 | no internet | the models must already be local; for C1 accuracy omit W3 and use the same local drafter; for C32 set `HADW=/models/atdev-c32/hadamard/qwen38_27b_hadamard_gptq_d10.safetensors` and pre-cache the INT4 base. C1 fast: set `MODEL=<dir>` (and for c1 `W3_OVERLAY=<dir>/w3/w3_gptqact_d30_mlpo.safetensors,<dir>/w3/w3_gptqact_d30_qkv.safetensors` `DRAFTER=<dir>/drafter`, where `<dir>` is a local copy of `atdev-company/Qwen3.8-27B-atdev-c1`) and `HF_HUB_OFFLINE=1` |
 | F10 | Docker build fails on `apt-get` or `pip` | retry once (network). If the base image tag is not found, use `--build-arg CUDA_IMAGE=nvidia/cuda:13.0.0-devel-ubuntu24.04` |
 | F11 | `unsupported GNU version` from nvcc | install a g++ version supported by nvcc 13.0 and export `CC` / `CXX` (R1) |
 | F12 | `unknown ATDEV_OPT entries` | `ATDEV_OPT` was edited by hand. Restore it from the serve script |
@@ -210,10 +233,10 @@ to the user.
 
 ## Phase 7: report to the user
 
-Report: the install path (Docker or venv), the stack (`c1` / `c32`), the GPU index, the endpoint URL
+Report: the install path (Docker or venv), the exact profile (`c1` fast / `c1-accuracy` / `c32` Hadamard W4A4), the GPU index, the endpoint URL
 (`http://<host>:8100/v1`, model name `m`), the time the first start took, the result of the Phase 5
 math check, and the speed check result if it was run. Give the user the commands to stop and
-restart the server (Phase 8).
+restart the server (Phase 8). Include the active target precision, sidecar/drafter sources, and whether the observed speed uses single-request decode or aggregate throughput. Report any errors or accuracy differences; do not label a short math answer as full accuracy validation. Link the measured profile table in `docs/ACCURACY.md`.
 
 ## Phase 8: stop and restart
 

@@ -3,6 +3,10 @@
 All numbers: Qwen3.8-27B, **1x NVIDIA A100 80GB (SXM, sm_80)**, vLLM 0.31.0 (pip wheel, unmodified),
 **greedy decoding** (temperature 0).
 
+## Current released profiles
+
+The original C1 W3 fast profile keeps the published 408.9 tok/s / up-to-14.2x maximum. C1 accuracy disables W3 and measured 357.172870 tok/s (two runs). C32 now ships only Hadamard W4A4, measured at 2,688.128833 aggregate tok/s in one run. The older unrotated C32 ladder is retained below as explicitly historical evidence, not a supported preset. Full task-by-task accuracy: [ACCURACY.md](ACCURACY.md).
+
 ## Workload and metrics
 
 * **Prompts**: 96 fixed chat prompts (coding, agentic, general, math; 39 in Korean). They are sent
@@ -43,7 +47,7 @@ kernel-selection mode that ships.
   <img alt="c=1 ladder chart" src="img/ladder_c1.svg">
 </picture>
 
-### c=32 (32 concurrent clients): aggregate output tok/s (96 prompts, 32 in flight)
+### Historical c=32 ladder (unrotated W4A4; not the shipped profile)
 
 | rung | setup | tok/s | vs bf16 default | vs best vLLM |
 |---|---|---:|---:|---:|
@@ -51,7 +55,7 @@ kernel-selection mode that ships.
 | 2 | `RedHatAI/Qwen3.8-27B-INT4`, vLLM defaults | 1,264.7 | 1.9x | 0.72x |
 | 3 | INT4 + best vLLM settings: MTP k=1, W4A8 Marlin, TRITON_ATTN, bf16 SSM cache, no prefix caching | 1,757.1 | 2.6x | 1.00x |
 | 4 | atdev-serve **engine only** (same model files as rung 3) | 2,135.7 | 3.2x | **1.22x** |
-| 5 | atdev-serve **full stack** (`serve_c32.sh`) | **2,730.9** | **4.1x** | **1.55x** |
+| 5 | Previous **unrotated full stack** (historical; no current launch preset) | **2,730.9** | **4.1x** | **1.55x** |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/ladder_c32-dark.svg">
@@ -72,13 +76,15 @@ Notes on the ladder:
   and a frequency-ordered 64k draft vocabulary). The engine builds these at load time and every
   accepted token is verified exactly.
 * Rungs 1-3 are plain `vllm serve` commands (see [Baseline launch commands](#baseline-launch-commands))
-  and rung 5 is `serve_c1.sh` / `serve_c32.sh`. This release ships no launch script for rung 4
+  and C1 rung 5 is `serve_c1.sh`. C32 rung 5 above is historical; current `serve_c32.sh` selects Hadamard W4A4 instead. This release ships no launch script for rung 4
   (engine only).
 * Rung 5 also includes model-side changes. c=1: the 3-bit W3 overlay, the re-trained W4A16 block-16
   drafter, and an int8 + int4 split verify head. c=32: W4A4 activations on the large verify GEMMs, an
   int4 MTP head, and an int4 verify-head screen with exact bf16 rescoring.
 
 ## Accuracy gates
+
+These are the original narrow development gates. They do not assert unchanged MMLU, Korean, instruction-following, code or PPL scores; the complete released-profile measurements and known gaps are in [ACCURACY.md](ACCURACY.md).
 
 "c=1" rows use the settings tuned for 1 client, "c=32" rows the settings tuned for 32 concurrent clients.
 
@@ -91,7 +97,9 @@ Notes on the ladder:
 | atdev engine only, c=1 | 0.963 | | 36/36 |
 | atdev engine only, c=32 | | 0.9447 | 36/36 |
 | atdev full stack, c=1 | 0.967 | 0.9500 | 36/36 |
-| atdev full stack, c=32 | | 0.9401 | 36/36 |
+| Historical atdev full stack, c=32 (unrotated) | | 0.9401 | 36/36 |
+| Shipped C1 accuracy (W3 disabled) | 0.970 | 0.9477 | 36/36 |
+| Shipped C32 Hadamard W4A4 | | 0.9469 | 36/36 |
 
 * GSM8K: greedy, thinking disabled, answer from `\boxed{}`. GSM8K-300 has a
   resolution of about 1 point at n=300, so GSM8K-1319 is the tie-breaker.

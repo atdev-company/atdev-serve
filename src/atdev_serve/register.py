@@ -14,6 +14,7 @@ _DONE = False
 # (API server, engine core, workers) before any model is constructed, which is what the
 # PluggableLayer / CustomOp out-of-tree swaps require.
 OPTIMIZATIONS: dict[str, str] = {
+    "a4_sim": "atdev_serve.a4_sim:register",
     # int4 copy of lm_head used only to choose speculative candidates
     "shadow_head": "atdev_serve.shadow_head:register",
     # drafter top-k over a 64k frequent-token vocabulary (candidate selection only)

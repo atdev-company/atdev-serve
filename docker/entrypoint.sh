@@ -8,6 +8,7 @@ stack=${1:-c1}
 [ $# -gt 0 ] && shift
 case $stack in
   c1)  exec ./serve_c1.sh "$@" ;;
+  c1-accuracy) exec ./serve_c1_accuracy.sh "$@" ;;
   c32) exec ./serve_c32.sh "$@" ;;
   check)
     nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader || echo "no GPU visible"

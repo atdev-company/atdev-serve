@@ -19,7 +19,7 @@ A100 80GB. Follow the steps in order.
 | GPU | NVIDIA **A100 80GB** (other GPUs are not supported) | `nvidia-smi` lists `A100-SXM4-80GB` or `A100 80GB PCIe` |
 | Driver | NVIDIA driver **>= 580** (CUDA 13.0) | `nvidia-smi` top-right shows `CUDA Version: 13.0` or higher |
 | OS | Linux x86_64 | `uname -sm` |
-| Disk | **80 GB free** (models ~34 GB (32 GiB) for c1, ~19 GB for c32, Python env ~9 GB, kernel cache ~2 GB, headroom) | `df -h ~` |
+| Disk | **80 GB free** (models ~34 GB for C1 fast, about 12.5 GB less for C1 accuracy, ~31.5 GB for C32 Hadamard, Python env ~9 GB, kernel cache ~2 GB, headroom) | `df -h ~` |
 | Network | access to `huggingface.co` (models download on the first start) | `curl -I https://huggingface.co` |
 | Docker path | Docker + NVIDIA Container Toolkit | `docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 nvidia-smi` |
 | venv path | Python 3.12, CUDA 13.0 toolkit with `nvcc`, `g++` | `python3.12 --version`, `nvcc --version`, `g++ --version` |
@@ -34,7 +34,10 @@ user, one request at a time), and **c32** for c=32, i.e. 32 concurrent clients (
 | if you... | run | what you get |
 |---|---|---|
 | serve one user at a time, or a few, and care about how fast each answer streams | **c1** (`serve_c1.sh`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings) |
-| serve many users at once and care about total throughput | **c32** (`serve_c32.sh`) | about 2,730.9 tokens/s in total at 32 parallel requests (vs 1,757.1 with the best stock vLLM settings) |
+| prioritize measured broad accuracy over the maximum C1 speed | **c1-accuracy** (`serve_c1_accuracy.sh`) | W3 disabled, same drafter; 357.17 tok/s; see [all scores](ACCURACY.md) |
+| serve many users at once and care about total throughput | **c32** (`serve_c32.sh`) | Hadamard W4A4 only: 2,688.13 aggregate tokens/s in one run at c=32 (vs historical 1,757.1 best stock vLLM) |
+
+The 14.2x / 2.08x maximum-speed claims belong only to C1 fast (`serve_c1.sh`). C1 accuracy changes only the W3 path and reuses the same drafter; C32 requires a Hadamard sidecar, not an external drafter. [Full accuracy, speed and limitations](ACCURACY.md).
 
 Both stacks accept any number of requests, but each is tuned for its load. Run one stack per GPU.
 
@@ -55,7 +58,9 @@ You do not need CUDA or Python on the host, only Docker with GPU support.
 ```bash
 git clone https://github.com/atdev-company/atdev-serve
 cd atdev-serve
-docker compose --profile c1 up --build          # or: --profile c32
+docker compose --profile c1 up --build          # original W3 fast profile
+# docker compose --profile c1-accuracy up --build  # W3 disabled
+# docker compose --profile c32 up --build          # Hadamard W4A4
 ```
 
 * The **first** run builds the image (it downloads about 10 GB of Python packages), downloads the
@@ -219,7 +224,9 @@ The launch scripts read these environment variables:
 | `CUDA_VISIBLE_DEVICES` | 0 | which GPU to use |
 | `MODEL` | `RedHatAI/Qwen3.8-27B-INT4` | target checkpoint (HF id or local path) |
 | `HF_REPO` (c1) | `atdev-company/Qwen3.8-27B-atdev-c1` | HF repo with the c1 model-side files (subfolders `w3/`, `drafter/`) |
-| `W3_OVERLAY` (c1) | `$HF_REPO:w3/` | 3-bit overlay: `repo:folder/`, `repo:path/file.safetensors`, or comma-separated local `.safetensors` paths |
+| `C1_MODE` | `fast` | `accuracy` disables W3 only; `serve_c1_accuracy.sh` selects this explicitly |
+| `HADW` (c32) | `atdev-company/Qwen3.8-27B-atdev-c32:hadamard/qwen38_27b_hadamard_gptq_d10.safetensors` | selected Hadamard sidecar, HF file spec or local path; no W4A8 fallback |
+| `W3_OVERLAY` (C1 fast only) | `$HF_REPO:w3/` | 3-bit overlay: `repo:folder/`, `repo:path/file.safetensors`, or comma-separated local `.safetensors` paths |
 | `DRAFTER` (c1) | `$HF_REPO:drafter/` | drafter: `repo:folder/` or a local dir |
 | `HF_HOME` | `~/.cache/huggingface` | model download cache |
 | `TORCH_EXTENSIONS_DIR` | `~/.cache/torch_extensions` | compiled kernel cache |
@@ -227,3 +234,18 @@ The launch scripts read these environment variables:
 The context length is 8192 tokens (`--max-model-len 8192`), which is the setting the stacks were tuned
 and measured with. You can pass a different value as an extra argument, but it has not been
 benchmarked.
+
+### Offline accuracy and Hadamard profiles
+
+Download the INT4 base for every profile. C1 accuracy needs only the existing `drafter/` files from the C1 artifact repo (plus the original DFlash2 architecture/config cache); it does not need `w3/`. C32 needs only its `hadamard/` sidecar in addition to the INT4 base and uses built-in MTP.
+
+```bash
+DRAFTER=/models/atdev-c1/drafter HF_HUB_OFFLINE=1 ./serve_c1_accuracy.sh
+HADW=/models/atdev-c32/hadamard/qwen38_27b_hadamard_gptq_d10.safetensors HF_HUB_OFFLINE=1 ./serve_c32.sh
+```
+
+Do not add the slower down-projection W4A8 restoration or a failed research checkpoint. See [data/license provenance](DATA_AND_LICENSES.md).
+
+### Updating an existing checkout
+
+Preserve local changes, run `git pull --ff-only`, then activate `atdev-env.sh` and run `python -m pip install --no-deps --force-reinstall .` to refresh the plugin even when its package version is unchanged. Docker users run their selected compose profile with `--build`. Restart only your own server. C32 now downloads the Hadamard sidecar; C1 accuracy continues to reuse the existing drafter.

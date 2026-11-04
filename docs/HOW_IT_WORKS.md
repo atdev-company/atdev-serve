@@ -183,3 +183,11 @@ These ideas were tried and measured, and none of them shipped:
   keeps the k=2 row budget instead.
 * FlashInfer tree attention at c=1: faster kernels, but the planning cost is paid on the host every
   step.
+
+## Released profile variants
+
+`serve_c1.sh` keeps the original W3 full stack and the original maximum-speed headline. `serve_c1_accuracy.sh` selects `C1_MODE=accuracy`: it removes only `w3_mixed` and its sidecar environment, retaining the same DFlash2 d16 drafter and all remaining C1 engine/verification settings. This is not the engine-only configuration.
+
+`serve_c32.sh` now uses only the selected Hadamard W4A4 path (`a4_sim`, `ATDEV_A4_REAL=had3`) and the offline Hadamard-rotated GPTQ sidecar. The activation transform and matching rotated weights must be used together; an unrotated or absent sidecar is not a valid fallback. The target's built-in MTP remains the drafter, with no external C32 drafter model. Earlier unrotated C32 descriptions and speed milestones in this document are historical. No down-projection W4A8 restoration is shipped.
+
+See [profile accuracy](ACCURACY.md) and [calibration data](DATA_AND_LICENSES.md).

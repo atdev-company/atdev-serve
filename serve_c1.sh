@@ -16,6 +16,9 @@
 # TORCH_EXTENSIONS_DIR.
 set -euo pipefail
 
+C1_MODE=${C1_MODE:-fast}  # fast (original W3) is the default; accuracy/noW3 keeps the DFlash stack.
+case "$C1_MODE" in fast|accuracy|noW3) ;; *) echo "invalid C1_MODE: use fast or accuracy" >&2; exit 2 ;; esac
+
 MODEL=${MODEL:-RedHatAI/Qwen3.8-27B-INT4}
 HF_REPO=${HF_REPO:-atdev-company/Qwen3.8-27B-atdev-c1}  # one repo: w3/ (overlay) + drafter/ (drafter)
 W3_OVERLAY=${W3_OVERLAY:-$HF_REPO:w3/}
@@ -33,6 +36,15 @@ export ATDEV_OPT=gdn_single_state,dflash_tree,attn_split_verify,gdn_meta_fast,sh
 # ---- model-side files (full stack) ----
 export ATDEV_W3_SIDECAR=$W3_OVERLAY                    # 3-bit g128 GPTQ overlay (MLP, GDN in/out, attention q/k/v/o)
 export ATDEV_DRAFTER_QUANT_PATH=$DRAFTER               # replaces z-lab/Qwen3.8-27B-DFlash2 at load
+
+if [[ "$C1_MODE" == fast ]]; then
+  echo 'atdev profile: c1-fast (original W3)' >&2
+else
+  # Match the accuracy variant by changing only the W3 feature and its overlay pointer.
+  export ATDEV_OPT=${ATDEV_OPT/,w3_mixed/}
+  unset ATDEV_W3_SIDECAR
+  echo 'atdev profile: c1-accuracy (no W3 overlay, same DFlash stack)' >&2
+fi
 
 # ---- settings that differ from serve_c32.sh ----
 export ATDEV_MP_CONFIG=$PKG/marlin_plus_cfg.json       # Marlin launch configs (W4A16)

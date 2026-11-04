@@ -467,6 +467,12 @@ _REGISTERED = False
 
 
 def register() -> None:
+    # The accuracy profile restores the measured W4 path; fast W3 math below is unchanged.
+    from atdev_serve.register import enabled as _enabled
+    if "w3_mixed" not in _enabled():
+        from atdev_serve import c1_accuracy
+        c1_accuracy.register()
+        return
     global _REGISTERED
     import hashlib
     import json

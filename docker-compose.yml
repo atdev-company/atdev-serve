@@ -31,6 +31,10 @@ services:
     <<: *atdev
     profiles: ["c1"]
     command: ["c1"]
+  atdev-c1-accuracy:
+    <<: *atdev
+    profiles: ["c1-accuracy"]
+    command: ["c1-accuracy"]
   atdev-c32:
     <<: *atdev
     profiles: ["c32"]

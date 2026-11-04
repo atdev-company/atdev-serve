@@ -2,11 +2,11 @@
 
 ## Up to 14.2× faster Qwen3.8-27B inference on a single A100, passing our accuracy gates
 
-- **14.2×** faster single-user decoding than the original bf16 model on stock vLLM (28.9 → **408.9 tok/s**)
+- **14.2×** faster single-user decoding with **C1 fast (W3)** than the original bf16 model on stock vLLM (28.9 → **408.9 tok/s**)
 - **2.08×** faster than the best stock-vLLM configuration we could find (196.5 → 408.9 tok/s)
-- **4.1×** more throughput at 32 concurrent requests than bf16 on stock vLLM, and **1.55×** more than the best vLLM settings (→ **2,730.9 tok/s**)
+- **4.0×** more throughput at 32 concurrent requests with **C32 Hadamard W4A4** than bf16 on stock vLLM, and **1.53×** more than the best vLLM settings (→ **2,688.1 tok/s**, single measured run)
 - Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API
-- 🤗 Model files on Hugging Face: [atdev-company/Qwen3.8-27B-atdev-c1](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) (W3 overlay + DFlash2 drafter, downloaded automatically on first start)
+- 🤗 Model files on Hugging Face: [atdev-company/Qwen3.8-27B-atdev-c1](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) (W3 overlay + DFlash2 drafter); [C32 Hadamard weights](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c32), downloaded automatically as needed
 
 In this README, **c=N means N concurrent clients**: c=1 is 1 client (a single user, one request at a time), c=32 is 32 concurrent clients (32 requests in flight).
 
@@ -36,13 +36,16 @@ general, math; 39 in Korean), up to 1024 output tokens each.
 | INT4 checkpoint (RedHatAI), vLLM defaults | 74.9 | 1,264.7 |
 | INT4 + **best vLLM settings** we found | 196.5 | 1,757.1 |
 | **atdev-serve, engine only** (same model files as vLLM) | 284.4 (**1.45x** vs best vLLM) | 2,135.7 (**1.22x**) |
-| **atdev-serve, full stack** (engine + model-side changes) | **408.9** (**2.08x**) | **2,730.9** (**1.55x**) |
-| full stack vs original bf16 + vLLM defaults | **14.2x** | **4.1x** |
+| **atdev-serve, released full stacks** (C1 fast / C32 Hadamard W4A4) | **408.9** (**2.08x**) | **2,688.1** (**1.53x**) |
+| atdev-serve, C1 accuracy (W3 disabled) | 357.17 (**1.82x**) | — |
+| released full stacks vs original bf16 + vLLM defaults | **14.2x** (C1 fast) | **4.0x** |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c1-dark.svg">
   <img alt="c=1 ladder (1 client, one request at a time): bf16 default 28.9, INT4 default 74.9, best vLLM 196.5, atdev engine only 284.4, atdev full stack 408.9 tok/s" src="docs/img/ladder_c1.svg">
 </picture>
+**Historical C32 chart:** the unrotated 2,730.9 tok/s configuration below is not the shipped C32 profile. The current Hadamard W4A4 measurement is 2,688.1 tok/s.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c32-dark.svg">
   <img alt="c=32 ladder (32 concurrent clients): bf16 default 671.8, INT4 default 1264.7, best vLLM 1757.1, atdev engine only 2135.7, atdev full stack 2,730.9 tok/s" src="docs/img/ladder_c32.svg">
@@ -58,11 +61,29 @@ Two kinds of results are reported separately:
   own: 3-bit weights, a re-trained drafter, W4A4 activations, low-bit verify-head parts. These change
   model files or numerics. Accuracy gates cover them (see [Accuracy](#accuracy)).
 
-All accuracy gates pass: GSM8K stays within 1 point of the stock vLLM reference and long-context
-retrieval is 36/36 in every configuration. Details and the full method are in
-[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+The original **GSM8K/long-context development gates** below pass: GSM8K stays within 1 point of its matching stock-vLLM reference and long-context retrieval is 36/36. These narrow gates do not establish unchanged broad accuracy; see [all per-profile scores and known gaps](docs/ACCURACY.md). Details and the measurement method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Quick start
+
+### Released profiles: choose speed or accuracy explicitly
+
+| Profile | Launch | Target weights | Extra model files | Measured speed |
+|---|---|---|---|---:|
+| **C1 fast (default)** | `./serve_c1.sh` | original W3 overlay on the INT4 checkpoint | existing W3 overlay + existing DFlash2 d16 drafter | **408.9 tok/s** published headline |
+| **C1 accuracy** | `./serve_c1_accuracy.sh` | stock RedHatAI INT4; W3 disabled | same existing DFlash2 d16 drafter; **no W3 download** | **357.17 tok/s**, two runs |
+| **C32 Hadamard W4A4** | `./serve_c32.sh` | Hadamard-rotated GPTQ INT4 sidecar; W4A4 verification retained | Hadamard sidecar; built-in MTP, **no external drafter** | **2,688.13 aggregate tok/s**, one run at c=32 |
+
+The **up to 14.2x / 2.08x maximum-speed claims belong to C1 fast**, not C1 accuracy.
+C1 accuracy keeps the drafter, verification head and engine settings, and disables only the W3
+weight overlay/path. It improves the measured broad accuracy and PPL relative to C1 fast, at a
+speed cost; it is not a promise of identical INT4 outputs or perfect scores on every task.
+C32 ships **only the Hadamard W4A4 profile**. The older unrotated C32 result of 2,730.9 tok/s is
+historical; down-projection W4A8 restoration is not a released option.
+
+See [the full per-profile accuracy table](docs/ACCURACY.md), including all measured differences,
+sample sizes, data sources and measurement limits. The original GSM8K/long-context gates below
+are narrower than these broad benchmarks; passing them does not establish lossless accuracy.
+
 
 You need: Linux, an **A100 80GB**, an NVIDIA driver that supports CUDA 13.0, 80 GB of free disk,
 and Hugging Face Hub access. The step-by-step guide is [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
@@ -81,7 +102,9 @@ docker compose --profile c1 up --build        # single-user stack on port 8100
 git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
 ./install.sh                 # checks the machine, creates .venv, installs vllm==0.31.0 + atdev-serve
 source atdev-env.sh          # activates .venv and sets CUDA_HOME for the kernel build
-./serve_c1.sh                # or ./serve_c32.sh
+./serve_c1.sh                # C1 fast (original W3, maximum-speed headline)
+# ./serve_c1_accuracy.sh      # C1 accuracy (W3 disabled, same drafter)
+# ./serve_c32.sh              # C32 Hadamard W4A4, built-in MTP
 ```
 
 The first start JIT-compiles the CUDA kernels and downloads the models, so it is slow. Later starts
@@ -104,12 +127,12 @@ curl http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/jso
 | run several agents in parallel, or process many documents in a batch | `./serve_c32.sh` |
 | are not sure | start with `./serve_c1.sh`; switch to `./serve_c32.sh` once you regularly have more than ~4 requests in flight |
 
-| | `serve_c1.sh` | `serve_c32.sh` |
+| | `serve_c1.sh` / `serve_c1_accuracy.sh` | `serve_c32.sh` |
 |---|---|---|
 | Best for | one user or a few users, lowest latency per request | many simultaneous users, highest total throughput |
 | Typical use cases | local or personal assistant, coding copilot, a single agent running tool calls one after another, interactive chat where response time matters | chatbot or API service for many users, team-wide assistants, multi-agent systems, batch jobs (summarization, extraction, evaluation) |
 | Speculative decoding | re-trained DFlash2 drafter (block 16) + 16-node token-tree verification | built-in MTP head, k=3, confidence-scheduled variable-length verification |
-| Extra downloads | W3 overlay (12.5 GB) + drafter (1.35 GB) | none |
+| Extra downloads | fast: W3 overlay (12.5 GB) + drafter (1.35 GB); accuracy: drafter only | Hadamard W4A4 sidecar (about 12.5 GB); no external drafter |
 | Measured at | 1 request in flight | 32 requests in flight |
 
 Both stacks serve any number of requests. They are just tuned for different loads.
@@ -173,6 +196,26 @@ More detail, the step-time breakdown and the full milestone history are in
 
 ## Accuracy
 
+The complete measured broad comparison is in [docs/ACCURACY.md](docs/ACCURACY.md). C1 fast retains its original speed/accuracy tradeoff; the separate C1 accuracy profile disables W3. C32 uses Hadamard W4A4 with a disclosed residual Korean benchmark gap. The table here records the original narrow development gates, with current released profiles distinguished below.
+
+Observed broad accuracy is shown below (percent; PPL lower is better). These are task measurements, not statistical equivalence or a losslessness guarantee. C32 Korean uses the final repeat, 65.07%, rather than its initial 66.04%.
+
+| Metric | Stock INT4 reference | C1 fast: original W3 | C1 accuracy: W3 disabled | C32 Hadamard W4A4 |
+|---|---:|---:|---:|---:|
+| MMLU-Pro (1,400) | 71.71% | 69.14% | 71.43% | 72.79% |
+| KMMLU Korean (1,125) | 66.84% | 63.91% | 66.22% | 65.07% |
+| IFEval prompt strict (541) | 82.90% | 82.07% | 82.99% | 82.44% |
+| IFEval prompt loose (541) | 86.60% | 84.84% | 86.32% | 86.51% |
+| IFEval instruction strict (834) | 87.89% | 87.65% | 88.01% | 88.01% |
+| IFEval instruction loose (834) | 90.89% | 89.69% | 90.77% | 91.01% |
+| HumanEval (164) | 95.73% | 94.51% | 95.73% | 95.12% |
+| HumanEval+ (164) | 90.85% | 88.41% | 91.46% | 89.63% |
+| MBPP (378) | 91.27% | 89.68% | 92.06% | 92.06% |
+| MBPP+ (378) | 76.46% | 75.66% | 76.98% | 78.04% |
+| WikiText-2 PPL, 40,920 tokens (lower is better) | 7.298721 | 8.219982 | 7.300041 | 7.209287 |
+
+The original narrow GSM8K/long-context gates follow.
+
 Greedy decoding, thinking disabled. GSM8K takes the answer from `\boxed{}`.
 Long-context is 36 passkey / multi-key retrieval items at 2k-6.5k tokens.
 "c=1" rows use the settings tuned for 1 client (one request at a time), "c=32" rows the settings tuned
@@ -186,8 +229,10 @@ for 32 concurrent clients.
 | best vLLM, c=32 settings | 0.953 | 0.9439 | 36/36 |
 | atdev engine only, c=1 | 0.963 | | 36/36 |
 | atdev engine only, c=32 | | 0.9447 | 36/36 |
-| **atdev full stack, c=1** | **0.967** | **0.9500** | **36/36** |
-| **atdev full stack, c=32** | | **0.9401** | **36/36** |
+| **C1 fast, original W3** | **0.967** | **0.9500** | **36/36** |
+| C1 accuracy, W3 disabled | 0.970 | 0.9477 | 36/36 |
+| Historical C32, unrotated W4A4 (not shipped) | | 0.9401 | 36/36 |
+| **C32 Hadamard W4A4 (shipped)** | | **0.9469** | **36/36** |
 
 Pass rule: GSM8K within 1 point of the matching stock vLLM reference, and long-context 36/36. A
 blank cell means that gate was not run for that configuration.
@@ -202,7 +247,7 @@ GPUs are not supported by this release.
 
 ## Reproducing the numbers
 
-This repository contains only what is needed to serve the two stacks. The metric definitions, the
+This repository contains the C1 fast and accuracy profiles and the C32 Hadamard W4A4 stack. The metric definitions, the
 exact baseline `vllm serve` commands and how to compare on your own GPU are in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Measure the baseline and atdev in the same session on the
 same GPU.
@@ -216,13 +261,13 @@ same GPU.
   includes both)
 * A **writable install location**: generated kernel sources go into the installed package, and
   compiled kernels go to `TORCH_EXTENSIONS_DIR` (default `~/.cache/torch_extensions`)
-* Disk, about 50 GB in total: target 19 GB, W3 overlay 12.5 GB, atdev drafter 1.35 GB, stock DFlash2
+* Disk, about 60 GB if all profiles are cached: target 19 GB, optional C1 W3 overlay 12.5 GB, C32 Hadamard sidecar about 12.5 GB, atdev drafter 1.35 GB, stock DFlash2
   repo up to 3.6 GB (c=1), Python env ~9 GB, kernel cache ~2 GB. Keep 80 GB free to be safe.
 
 ## Repository layout
 
 ```
-serve_c1.sh, serve_c32.sh     launch scripts (features + per-stack options as env vars)
+serve_c1.sh, serve_c1_accuracy.sh, serve_c32.sh  launch scripts (features + per-stack options as env vars)
 install.sh                    venv installer with preflight checks (--dry-run to preview)
 docker/, docker-compose.yml   container image + compose profiles c1 / c32
 AI_SETUP.md                   end-to-end setup instructions for AI coding agents
@@ -241,11 +286,12 @@ Here c=1 means the stack tuned for 1 client (`serve_c1.sh`), and c=32 the stack 
 | [`RedHatAI/Qwen3.8-27B-INT4`](https://huggingface.co/RedHatAI/Qwen3.8-27B-INT4) | both stacks (target) | Apache-2.0 |
 | [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) | bf16 baseline rung only | Apache-2.0 |
 | [`z-lab/Qwen3.8-27B-DFlash2`](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) | c=1 (config; weights replaced by the atdev drafter) | Apache-2.0 |
-| [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | c=1: `w3/` (3-bit overlay, 12.5 GB) and `drafter/` (re-trained DFlash2 drafter, 1.35 GB) | Apache-2.0 |
+| [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | C1 fast: `w3/` + `drafter/`; C1 accuracy: the same `drafter/` only | Apache-2.0 |
+| [`atdev-company/Qwen3.8-27B-atdev-c32`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c32) | C32: `hadamard/` GPTQ sidecar only; built-in MTP, no separate drafter | Apache-2.0 model derivatives; calibration-source attribution in the model card |
 
-The atdev drafter and the W3 calibration used only prompts from
+The existing C1 atdev drafter and W3 calibration used only prompts from
 `HuggingFaceH4/ultrachat_200k` (train_sft) and `openai/gsm8k` (train), with responses generated by
-the target model.
+the target model. C1 accuracy reuses that drafter and does not add a trained target checkpoint. C32 Hadamard calibration uses a different calibration pool, including FineWeb-2 Korean and FineWeb-Edu; see [data and license provenance](docs/DATA_AND_LICENSES.md). No research-only recovery candidates are shipped.
 
 ## License
 
@@ -257,8 +303,8 @@ their own licenses, which are listed on their model cards.
 
 [ATDEV](https://www.atdev.co.kr) optimizes LLM inference for **your model on your target GPUs**.
 This repository is one example of that work: on one A100, Qwen3.8-27B runs **up to 14.2x faster**
-than the original model on stock vLLM (single user), and serves **up to 4.1x** more tokens per second
-at 32 concurrent requests, with accuracy gates in place.
+than the original model on stock vLLM (single user), and serves **about 4.0x** more tokens per second
+at 32 concurrent requests with the shipped Hadamard W4A4 profile. See the per-profile measurements and accuracy limitations above.
 
 What we do:
 
