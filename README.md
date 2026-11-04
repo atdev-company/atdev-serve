@@ -69,6 +69,12 @@ Two kinds of results are reported separately:
 
 The original **GSM8K/long-context development gates** below pass: GSM8K stays within 1 point of its matching stock-vLLM reference and long-context retrieval is 36/36. These narrow gates do not establish unchanged broad accuracy; see [all per-profile scores and known gaps](docs/ACCURACY.md). Details and the measurement method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+## Context length
+
+**Up to 262,144 total context tokens (input + output)** are supported by the C1 Fast W3 and C32 Hadamard W4A4 profiles. Each was tested on a **single A100 80GB** with **261,583 input tokens + 21 output tokens = 261,604 total tokens**, correctly retrieving all three codes placed at the beginning, middle and end of a synthetic long input.
+
+Pass `--max-model-len 262144` to the selected launch script. The default remains 8,192 total context tokens; the published speed benchmarks use an output cap of 1,024 tokens. This record is a single long-request functional test for each profile.
+
 ## Quick start
 
 ### Released profiles: choose speed or accuracy explicitly

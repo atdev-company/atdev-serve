@@ -175,6 +175,12 @@ lines (`grep -E 'Error|Exception' "$LOG" | tail -5`) and match them against Phas
 Harmless warnings: unauthenticated Hugging Face Hub requests, and vLLM `Can't pickle ...` for the AOT
 cache.
 
+### Optional 262,144-token context
+
+The default launch limit is 8,192 total tokens (input + output). If the user requests the full native context, start **C1 Fast W3 or C32 Hadamard W4A4** with `--max-model-len 262144` appended to its launch command. If a server is already running, stop only the owned server before restarting it with the new limit.
+
+Both profiles passed a single-A100-80GB test with **261,583 input + 21 output = 261,604 total tokens**, correctly retrieving three codes from the beginning, middle and end of a synthetic long input. Keep request `max_tokens` within the remaining context. Published speed benchmarks still use the 8,192-context preset and an output cap of 1,024 tokens.
+
 ## Phase 5: verify the server
 
 ```bash

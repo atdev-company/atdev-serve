@@ -231,9 +231,16 @@ The launch scripts read these environment variables:
 | `HF_HOME` | `~/.cache/huggingface` | model download cache |
 | `TORCH_EXTENSIONS_DIR` | `~/.cache/torch_extensions` | compiled kernel cache |
 
-The context length is 8192 tokens (`--max-model-len 8192`), which is the setting the stacks were tuned
-and measured with. You can pass a different value as an extra argument, but it has not been
-benchmarked.
+The default context length is 8,192 total tokens (`--max-model-len 8192`, input + output). The speed benchmarks use an output cap of 1,024 tokens.
+
+**C1 Fast W3 and C32 Hadamard W4A4 support up to 262,144 total context tokens.** To select it when starting the server:
+
+```bash
+./serve_c1.sh --max-model-len 262144
+# Or, for C32: ./serve_c32.sh --max-model-len 262144
+```
+
+Each profile was tested on a single A100 80GB with **261,583 input + 21 output = 261,604 total tokens**, retrieving all three codes from the beginning, middle and end of a synthetic long input. This is a single-request functional validation; the published speed numbers remain the 8,192-context benchmark. Request `max_tokens` must fit within the remaining context after the input and chat template.
 
 ### Offline accuracy and Hadamard profiles
 
