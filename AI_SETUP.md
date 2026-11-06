@@ -7,6 +7,16 @@ Phase 7 to the user.
 
 Repository: `https://github.com/atdev-company/atdev-serve`. Human guide: `docs/USER_GUIDE.md`.
 
+## Tested environment reference
+
+The project's inspected stack is **Python 3.12.13 / PyTorch 2.13.0+cu130 /
+vLLM 0.31.0 / CUDA toolkit 13.0 (nvcc V13.0.88)** on an **A100-SXM4-80GB** with
+NVIDIA driver **580.126.20**. See [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) for the
+complete version snapshot and reporting commands. Record the actual installed
+versions during setup; the observed patch versions are not additional installer
+pins. Do not infer the installed CUDA toolkit from the CUDA label in `nvidia-smi`;
+check both `torch.version.cuda` and `nvcc --version`.
+
 ## Rules
 
 * **R1. Ask before acting** when a step needs `sudo`, installs system packages, stops another process,

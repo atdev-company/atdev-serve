@@ -266,6 +266,12 @@ same GPU.
 
 ## Requirements
 
+**Tested stack:** A100-SXM4-80GB · Ubuntu 24.04.3 · Python 3.12.13 ·
+PyTorch **2.13.0+cu130** · vLLM **0.31.0** · CUDA toolkit **13.0 (nvcc V13.0.88)** ·
+NVIDIA driver **580.126.20**. See the **[full tested environment and version checks](docs/ENVIRONMENT.md)**
+for Triton, FlashInfer, Transformers and compiler versions, and the distinction between
+PyTorch's CUDA build, the local toolkit and driver compatibility.
+
 * NVIDIA **A100 80GB** (sm_80), Linux, an NVIDIA driver for CUDA 13.0
 * **Python 3.12** and **vLLM 0.31.0** from pip (unmodified; torch 2.13.0+cu130 comes with it). The
   plugin changes vLLM only at runtime and never patches files on disk.

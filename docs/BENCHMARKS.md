@@ -3,6 +3,16 @@
 All numbers: Qwen3.8-27B, **1x NVIDIA A100 80GB (SXM, sm_80)**, vLLM 0.31.0 (pip wheel, unmodified),
 **greedy decoding** (temperature 0).
 
+## Tested environment
+
+The project environment was inspected on 2026-11-07: Python **3.12.13**, PyTorch
+**2.13.0+cu130**, vLLM **0.31.0**, CUDA toolkit **13.0 / nvcc V13.0.88**, NVIDIA
+driver **580.126.20**, and an **A100-SXM4-80GB**. The full package/compiler snapshot
+and commands to check your installation are in [ENVIRONMENT.md](ENVIRONMENT.md).
+Ancillary patch versions are a current environment snapshot, not proof that every
+historical run used identical ancillary versions. Match the workload and metric
+below as well as the software stack when comparing speed.
+
 ## Current released profiles
 
 The original C1 W3 fast profile keeps the published 408.9 tok/s / up-to-14.2x maximum. C1 accuracy disables W3 and measured 357.172870 tok/s (two runs). C32 now ships only Hadamard W4A4, measured at 2,688.128833 aggregate tok/s in one run. The older unrotated C32 ladder is retained below as explicitly historical evidence, not a supported preset. Full task-by-task accuracy: [ACCURACY.md](ACCURACY.md).
