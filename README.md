@@ -77,6 +77,11 @@ Pass `--max-model-len 262144` to the selected launch script. The default remains
 
 ## Quick start
 
+**Default sampling:** `serve_c1.sh`, `serve_c1_accuracy.sh` and `serve_c32.sh` set the server
+default to **`temperature: 0` (greedy)**. Requests may omit `temperature` to use this default;
+an explicit request value takes precedence. Published speed and accuracy measurements use
+`temperature: 0`; sampling at higher temperatures is not qualified by those results.
+
 ### Released profiles: choose speed or accuracy explicitly
 
 | Profile | Launch | Target weights | Extra model files | Measured speed |

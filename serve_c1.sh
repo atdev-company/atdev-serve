@@ -57,5 +57,6 @@ exec "${VLLM:-vllm}" serve "$MODEL" \
   --max-model-len 8192 --kv-cache-dtype bfloat16 --language-model-only \
   --gpu-memory-utilization 0.90 --mamba-ssm-cache-dtype bfloat16 \
   --attention-backend TRITON_ATTN --no-enable-prefix-caching \
+  --override-generation-config '{"temperature":0}' \
   --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2","num_speculative_tokens":15}' \
   "$@"

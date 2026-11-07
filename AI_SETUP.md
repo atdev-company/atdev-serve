@@ -203,8 +203,12 @@ curl -s http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/
 # expected: a completion whose content contains 391
 ```
 
-The model's `generation_config.json` defaults to temperature 1.0; the checks here pass
-`"temperature":0` explicitly. Pass the temperature explicitly for reproducible results.
+The model's original `generation_config.json` defaults to temperature 1.0, but the released
+`serve_c1.sh` / `serve_c1_accuracy.sh` / `serve_c32.sh` launch presets override the server default
+to **temperature 0** with `--override-generation-config '{"temperature":0}'`. Requests that omit
+`temperature` therefore use greedy decoding. An explicitly supplied request temperature takes
+precedence. The examples still pass `"temperature":0` explicitly for reproducible comparisons;
+`temperature > 0` has not been validated for the published speed or quality.
 
 Optional speed check (send it twice; the first requests after a start are slower):
 

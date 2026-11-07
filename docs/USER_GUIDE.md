@@ -179,8 +179,12 @@ print()
 `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` in the Python client, or add
 `"chat_template_kwargs": {"enable_thinking": false}` to the JSON body.
 
-**Sampling.** The speedups and accuracy checks were measured with `temperature: 0` (greedy). Requests
-with `temperature > 0` still run, but this release has not validated them for speed or quality.
+**Sampling.** All three launch presets default to **`temperature: 0` (greedy)** through
+`--override-generation-config '{"temperature":0}'`; `serve_c1_accuracy.sh` inherits this from
+`serve_c1.sh`. Omitting `temperature` in an API request uses that server default. An explicit
+request value takes precedence. The model's original generation config is not modified.
+The published speedups and accuracy checks were measured with `temperature: 0`; requests
+with `temperature > 0` have not been validated for those speed or quality results.
 
 ## 5. Check that it is working well
 
