@@ -49,6 +49,34 @@ class Hadamard(unittest.TestCase):
             declaration=re.search(r'\b(?:bool|void) '+name+r'\((.*?)\)\s*\{',source,re.S)
             self.assertEqual(len(declaration.group(1).split(',')),count)
 
+    def test_gdn_adapter_passes_the_full_abi_of_the_multiturn_callers_through_unchanged(self):
+        raw=SimpleNamespace(gdn_ss=mock.Mock(),gdn_ss_a4=mock.Mock());adapter=a4.GDNAdapter(raw)
+        full=tuple(range(26));adapter.gdn_ss(*full);self.assertEqual(raw.gdn_ss.call_args.args,full)
+        full=tuple(range(30));adapter.gdn_ss_a4(*full);self.assertEqual(raw.gdn_ss_a4.call_args.args,full)
+        for bad in (22,24,25,27):
+            with self.assertRaises(ValueError):adapter.gdn_ss(*range(bad))
+        for bad in (26,28,29,31):
+            with self.assertRaises(ValueError):adapter.gdn_ss_a4(*range(bad))
+        gv=Path(a4.__file__).parent/'csrc/gdn_var'
+        for name in ('gdn_ss12h.cu','gdn_ss15h.cu'):  # both selected kernels declare the full ABI the callers use
+            source=(gv/name).read_text()
+            for fn,count in (('gdn_ss',26),('gdn_ss_a4',30)):
+                declaration=re.search(r'\b(?:bool|void) '+fn+r'\((.*?)\)\s*\{',source,re.S)
+                self.assertEqual(len(declaration.group(1).split(',')),count,(name,fn))
+
+    def test_gdn_extension_hook_accepts_both_selected_kernels_and_wraps_them(self):
+        from atdev_serve import gdn_single_state as gss
+        gv=Path(gss.__file__).parent/'csrc'/'gdn_var'
+        for name,ok in (('gdn_ss15h.cu',True),('gdn_ss12h.cu',True),('gdn_ss12.cu',False)):
+            env={'ATDEV_A4_REAL':'had3','ATDEV_OPT':'a4_sim,gdn_single_state','ATDEV_GDN_SRC':str(gv/name)}
+            with mock.patch.dict(os.environ,env),mock.patch.object(gss,'_EXT',None),\
+                 mock.patch('torch.utils.cpp_extension.load',return_value=SimpleNamespace(gdn_ss=mock.Mock())) as load:
+                if ok:
+                    ext=gss.cuda_ext();self.assertIsInstance(ext,a4.GDNAdapter)
+                    self.assertTrue(load.call_args.kwargs['sources'][0].endswith(name))
+                else:
+                    with self.assertRaises(ValueError):gss.cuda_ext()
+
     def test_loader_substitution_refuses_missing_duplicate_invalid_or_mismatched(self):
         import torch
         from types import ModuleType

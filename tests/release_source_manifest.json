@@ -67,23 +67,23 @@
     "loader resolves oneHub file, validates exactQwen800schema andfullcheckpointcoverage; no experimental/fake modes"
   ],
   "source_SHA256": {
-    "serve_c1.sh": "93e71eba03e3afe14c296b491e4af455041721c54c288337da606c0c4779b84b",
+    "serve_c1.sh": "55b7841f1d60ddf2cf2b1dbed4bd76e1625781f0c2c4b8b090c2c5ee97720be2",
     "serve_c1_accuracy.sh": "36804e47936acfc1b852410bac0794f44793737c2a664d7b633b5c139a380cac",
-    "serve_c32.sh": "c7815a77d092d78792c5b9f50504ec7d20182dc8ed49db0672b49b3275f5cbcb",
+    "serve_c32.sh": "3df919dad9fc0d1bb4d373fef106460eb6820918dd3e47c93d8a5e92bd64b46a",
     "docker/Dockerfile": "aeaefad922a04361d0f2b5c04e7d06e026e646fe91bf0ed75225e3d3e5babb3c",
-    "docker/entrypoint.sh": "03305dead68d8f98b7ec30039f79285f1259f42f717f9e545f1092e4718c63f4",
-    "docker-compose.yml": "b7fa799bfcbea51237d19bc2beea08c956ae3172121154a1da7c74e06a62f71e",
-    "src/atdev_serve/a4_sim.py": "344602ff03bfe0144aefd7e6200170507fa1be33f45a39ba01473c058e054360",
-    "src/atdev_serve/register.py": "bb0029b5f674ee6ceda3c9a7b6e3ca9528e0fd7af7af0ab5e7d4c73ff5f0e04d",
-    "src/atdev_serve/gdn_single_state.py": "e7eacb51ff602df6483c5131c28330cecd9789ad709946c91c5ea081fb205273",
-    "src/atdev_serve/fused_quant.py": "75b8a055c169935d71bfdf51740ab1eeefc69d1de383edee7f36e7cfb368230d",
-    "tests/test_release_profiles.py": "678c3ff46d745a4e61d3d8dd975dade0f3ee30fc795efc980a65631718ae0e99",
-    "tests/test_hadamard_release.py": "401979417f6d3ba6eee4d25f816d93dcb8324ac89da1908807da583c5d66d526",
+    "docker/entrypoint.sh": "57c0de0b7538108020c49f425291bf559d340565b89e94881d1db40cc95cee1f",
+    "docker-compose.yml": "b21b1e8edd6feed312327690fed801d29228b930986a5a8312f018a3e4fc552f",
+    "src/atdev_serve/a4_sim.py": "efc6c431b318f5d5f220043e54b1098cc994098f169cc5319312206d629d4f31",
+    "src/atdev_serve/register.py": "ed54307d4449f223bdbfebc07778ecabe8dcd9b90ea7ea3f100728a7b0301688",
+    "src/atdev_serve/gdn_single_state.py": "d7550b04ebc442f3cf0d1b1bf0de12f8d4a5ee940e449c1acff335c0eac02760",
+    "src/atdev_serve/fused_quant.py": "df9287320dbf073cb9ba16bc6a36b53ac82455fed68712de9b79299b58a51227",
+    "tests/test_release_profiles.py": "82ed048ce3554b1bc10ac57d5443c42c6adf8b206886fa1412e1981f38a18027",
+    "tests/test_hadamard_release.py": "18017ba9e3a6e5e08ab9f60cbe1f8e5da5c1b3caa00329810b815f785eb2287f",
     "src/atdev_serve/csrc/acc_c32/a4_had.cu": "19248fab51212bd099957ed3086fc168e07af08a88c277b5e5a73f44abee2705",
     "src/atdev_serve/csrc/c32_prod_h.cu": "63df57f16f5e3762f808d3cc9e9c8dae386cd122d384e9b8ea9f9a5b23210f75",
     "src/atdev_serve/csrc/c32c_csum_h.cu": "e19845b5c43a37e68d85272044e248e0dc76fe5dc517976d82bbcf0589f4a55a",
     "src/atdev_serve/csrc/gdn_var/gdn_ss12h.cu": "652dc492abb50cdc0f964f4351aea4a28c08748322dae27e26bb5c33bc77fd3b",
-    "src/atdev_serve/c1_fuse.py": "e72a6d323164067039f1aecf8236f0912d884664d03a13727f0ebbd78cbb9e38",
+    "src/atdev_serve/c1_fuse.py": "f69caa978b6824fe3aade55f4e92d574791841b41e2469c66677298b83f2aa22",
     "src/atdev_serve/c1_accuracy.py": "4982e7b67900a384ac591995fdb4e31c6ae613b36df2081d12e0692ade81239e",
     "src/atdev_serve/c1_norm.py": "82a6732ef772506da5f8069e8f5fd9abdf6dabf074afbc2448e062c92fc39832",
     "src/atdev_serve/marlin_c1_build.py": "c28d16d8358cd0ea0e53ae1ce702710fe6ed829d7999f6fbda454c0a67236238",
@@ -188,5 +188,6 @@
     "CLI_help": "actual vLLM parser + whole actual accuracy registry exercised with localdraftfolder; hardware target/JIT only mocked, no model weights or GPU",
     "C32_sources_changed": false,
     "all_CUDA_sources_changed": false
-  }
+  },
+  "multiturn_rc2_note": "source_SHA256 refreshed for the multiturn profiles (mt-rc2); baseline_release_commit and the Hadamard evidence entries describe the earlier release"
 }

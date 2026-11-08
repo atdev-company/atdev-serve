@@ -9,28 +9,65 @@ import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
 FAST='gdn_single_state,dflash_tree,attn_split_verify,gdn_meta_fast,shadow_head,draft_vocab,marlin_plus,ba_gemv,c1_fuse,drafter_ctxfold,w3_mixed,verify_split_head,drafter_w4,tree_attn,ll1_fuse,ll5_fuse'
+MT_C1={'ATDEV_DFT_APC':'1','ATDEV_PF_FUSE':'1','ATDEV_PF_GLUE':'1','ATDEV_PF_FA2':'1','ATDEV_PF_FA2_GATHER':'1','ATDEV_PF_FA2_FI':'1','ATDEV_PF_FA2_FI_MINQ':'2','ATDEV_PF_FA2_FI_PINRING':'1','ATDEV_SWA_FINE':'1','ATDEV_W3_DQ':'1','ATDEV_W3_DQ_MIN_M':'1536','ATDEV_W3_I8':'1','ATDEV_W3_I8_MIN_M':'64','ATDEV_TOK_CACHE':'1','ATDEV_GDN_SMALL':'32','ATDEV_TREE_HSPL':'auto','VLLM_USE_V2_MODEL_RUNNER':'1','ATDEV_VSPLIT_FBITS':'8','ATDEV_VSPLIT_STREAMS':'1','ATDEV_DRAFT_VOCAB_TOPKX':'1'}
+C32_MT='a4_sim,draft_vocab,gdn_single_state,verify_split_head,mtp_w4,marlin_plus,fused_quant,vsplit_mtp,gdn_a4_fold,mtp_prune,c32_attn,di1_varlen,c32_conv,c32k_fuse'
+MT_C32={'ATDEV_A4_REAL':'had3','ATDEV_A4ACC_FUSE':'1','ATDEV_A4ACC_S4':'1','ATDEV_A4ACC_CLIP':'0.9','ATDEV_PF_A4_SKIP':'*:0-0','ATDEV_GDN_META':'1','ATDEV_GDN_SS_ALIGN':'1','ATDEV_GDN_IMPL':'cuda','ATDEV_DRAFT_VOCAB_SIZE':'65536','ATDEV_DRAFT_VOCAB_BITS':'4','ATDEV_VSPLIT_SIZE':'65536','ATDEV_VSPLIT_BITS':'4','ATDEV_C32_MK':'1','ATDEV_C32K_SCR':'1','ATDEV_C32C_CSUM':'1','ATDEV_C32P_BA':'1','ATDEV_GDN_CORE_EMPTY':'1','ATDEV_C32_QKG':'1','ATDEV_FQ_A4_CUDA':'1','ATDEV_A4_SET':'cfg','ATDEV_A4_DEFINES':'A4_FOLD2=1,A4_MAGICQ=1,A4_SCALAR_CTMP=1,A4_PAR_REDUCE=6,A4_C32C_PB=1,A4_S0=1,A4_PTRINC=1,A4_PTRINC_ST=6','ATDEV_DI1_CG_MAXREQS':'32','ATDEV_DI1_BUDGET':'rows:96','ATDEV_DI1_STATS':'0','ATDEV_VSPLIT_FAST':'1','ATDEV_VSPLIT_TAIL_MP':'64,256,256,6,1,4','ATDEV_VSPLIT_A4SCR':'1','ATDEV_VSPLIT_A4SCR_CFG':'16,4','ATDEV_PF_FA2':'1','ATDEV_PF_FI':'1','ATDEV_PF_MP':'1','ATDEV_PF_A4':'1','ATDEV_PF_A4_RQV':'1','ATDEV_TOK_CACHE':'1','ATDEV_DRAFT_VOCAB_FUSED':'1','ATDEV_VSPLIT_A8':'1','VLLM_MARLIN_INPUT_DTYPE':'int8'}
 C32='a4_sim,draft_vocab,gdn_single_state,verify_split_head,mtp_w4,marlin_plus,fused_quant,vsplit_mtp,gdn_a4_fold,mtp_prune,c32_attn,di1_varlen,c32_conv,c32k_fuse'
 
 class Profiles(unittest.TestCase):
-    def launch(self,script,**overrides):
+    def launch(self,script,*args,**overrides):
         with tempfile.TemporaryDirectory() as d:
             fake=Path(d)/'vllm'
             fake.write_text('#!'+sys.executable+'\nimport os,sys,json\nprint(json.dumps({"argv":sys.argv[1:],"env":{k:v for k,v in os.environ.items() if k.startswith(("ATDEV_","VLLM_","CUDA_"))}}))\n');fake.chmod(0o755)
             env={k:v for k,v in os.environ.items() if not k.startswith(('ATDEV_','VLLM_','CUDA_','C1_MODE','C32_HADAMARD','HADW'))}
             env.update(PYTHON=sys.executable,PYTHONPATH=str(ROOT/'src'),VLLM=str(fake),**overrides)
-            run=subprocess.run(['bash',str(ROOT/script),'--seed','17'],env=env,text=True,capture_output=True,cwd=ROOT)
+            run=subprocess.run(['bash',str(ROOT/script),*args,'--seed','17'],env=env,text=True,capture_output=True,cwd=ROOT)
             return run,json.loads(run.stdout) if run.returncode==0 else None
 
-    def test_c1_default_fast_exact_features_and_dflash_args(self):
-        run,p=self.launch('serve_c1.sh');self.assertEqual(run.returncode,0,run.stderr)
+    def test_c1_single_profile_fast_exact_features_and_dflash_args(self):
+        run,p=self.launch('serve_c1.sh','--profile','single');self.assertEqual(run.returncode,0,run.stderr)
         self.assertEqual(p['env']['ATDEV_OPT'],FAST)
         self.assertEqual(p['env']['ATDEV_W3_SIDECAR'],'atdev-company/Qwen3.8-27B-atdev-c1:w3/')
         self.assertEqual(p['env']['ATDEV_DRAFTER_QUANT_PATH'],'atdev-company/Qwen3.8-27B-atdev-c1:drafter/')
         self.assertEqual(json.loads(p['argv'][p['argv'].index('--speculative-config')+1]),{'method':'dflash','model':'z-lab/Qwen3.8-27B-DFlash2','num_speculative_tokens':15})
+        self.assertIn('--no-enable-prefix-caching',p['argv']);self.assertEqual(p['argv'][p['argv'].index('--max-model-len')+1],'8192')
+        self.assertNotIn('ATDEV_DFT_APC',p['env'])
         self.assertEqual(p['argv'][-2:],['--seed','17']);self.assertIn('c1-fast',run.stderr)
 
+    def test_c1_default_is_multiturn_with_the_frozen_bundle(self):
+        run,p=self.launch('serve_c1.sh','--profile','multiturn',NO_WARMUP='1');default,d=self.launch('serve_c1.sh',NO_WARMUP='1')
+        self.assertEqual(run.returncode,0,run.stderr);self.assertEqual(default.returncode,0,default.stderr);self.assertEqual(p,d)
+        self.assertEqual(p['env']['ATDEV_OPT'],FAST)
+        for key,value in MT_C1.items():self.assertEqual(p['env'][key],value,key)
+        self.assertNotIn('ATDEV_EOR_CKPT',p['env'])
+        spec=json.loads(p['argv'][p['argv'].index('--speculative-config')+1])
+        self.assertEqual(spec,{'method':'dflash','model':'z-lab/Qwen3.8-27B-DFlash2','num_speculative_tokens':15,'disable_eagle_block_drop':True})
+        a=p['argv'];self.assertIn('--enable-prefix-caching',a);self.assertEqual(a[a.index('--mamba-cache-mode')+1],'align')
+        self.assertIn('--enable-mamba-shared-prefix-checkpoint',a);self.assertEqual(a[a.index('--prefix-match-unit')+1],'16')
+        self.assertEqual(a[a.index('--max-model-len')+1],'131072');self.assertEqual(a[a.index('--max-num-batched-tokens')+1],'2048')
+        self.assertEqual(a[-2:],['--seed','17']);self.assertIn('multiturn',run.stderr)
+        bad,_=self.launch('serve_c1.sh','--profile','multiturn',C1_MODE='accuracy');self.assertNotEqual(bad.returncode,0)
+        eor,e=self.launch('serve_c1.sh',NO_WARMUP='1',ATDEV_EOR_CKPT='1');self.assertEqual(eor.returncode,0,eor.stderr)
+        self.assertEqual((e['env']['ATDEV_EOR_CKPT'],e['env']['ATDEV_EOR_SNAP']),('1','16'))
+
+    def test_c32_multiturn_profile_is_the_frozen_c32mt_bundle_and_single_stays_hadamard(self):
+        run,p=self.launch('serve_c32.sh','--profile','multiturn',NO_WARMUP='1');dflt,d=self.launch('serve_c32.sh',NO_WARMUP='1');self.assertEqual(p,d);self.assertEqual(run.returncode,0,run.stderr);e=p['env']
+        self.assertEqual(e['ATDEV_OPT'],C32_MT);self.assertTrue(e['ATDEV_A4_HADW'].endswith('qwen38_27b_hadamard_gptq_d10.safetensors'))
+        for key,value in MT_C32.items():self.assertEqual(e[key],value,key)
+        self.assertTrue(e['ATDEV_GDN_SRC'].endswith('/csrc/gdn_var/gdn_ss15h.cu'));self.assertNotIn('ATDEV_EOR_CKPT',e)
+        a=p['argv'];self.assertEqual(a[a.index('--max-model-len')+1],'16384');self.assertEqual(a[a.index('--max-num-batched-tokens')+1],'4096')
+        self.assertEqual(a[a.index('--max-num-seqs')+1],'32');self.assertEqual(a[a.index('--gpu-memory-utilization')+1],'0.90')
+        self.assertEqual(a[a.index('--prefix-match-unit')+1],'16');self.assertIn('--enable-prefix-caching',a)
+        self.assertEqual(json.loads(a[a.index('--speculative-config')+1]),{'method':'mtp','num_speculative_tokens':3,'use_local_argmax_reduction':True})
+        _,noa4=self.launch('serve_c32.sh','--profile','multiturn',NO_WARMUP='1',ATDEV_PF_A4='0');self.assertEqual(noa4['env']['ATDEV_PF_A4'],'0')
+        eor,x=self.launch('serve_c32.sh','--profile','multiturn',NO_WARMUP='1',ATDEV_EOR_CKPT='1');self.assertEqual(eor.returncode,0,eor.stderr)
+        self.assertEqual((x['env']['ATDEV_EOR_CKPT'],x['env']['ATDEV_EOR_SNAP'],x['env']['ATDEV_EOR_PLANNED']),('1','32','1'))
+        self.assertEqual(x['argv'][x['argv'].index('--gpu-memory-utilization')+1],'0.93')
+        single,s=self.launch('serve_c32.sh','--profile','single');self.assertEqual(single.returncode,0,single.stderr)
+        self.assertEqual(s['env']['ATDEV_A4_REAL'],'had3');self.assertIn('--no-enable-prefix-caching',s['argv'])
+
     def test_accuracy_changes_only_w3_feature_and_sidecar_not_other_flags_or_argv(self):
-        _,fast=self.launch('serve_c1.sh')
+        _,fast=self.launch('serve_c1.sh','--profile','single')
         run,acc=self.launch('serve_c1.sh',C1_MODE='accuracy',ATDEV_W3_SIDECAR='must-not-load')
         self.assertEqual(run.returncode,0,run.stderr)
         self.assertEqual(acc['argv'],fast['argv'])
@@ -40,7 +77,7 @@ class Profiles(unittest.TestCase):
         invalid,_=self.launch('serve_c1.sh',C1_MODE='typo');self.assertNotEqual(invalid.returncode,0)
 
     def test_c32_only_selected_hadamard_with_builtin_mtp(self):
-        run,p=self.launch('serve_c32.sh',ATDEV_A4_REAL='unrotated',ATDEV_DRAFTER_QUANT_PATH='must-not-load')
+        run,p=self.launch('serve_c32.sh','--profile','single',ATDEV_A4_REAL='unrotated',ATDEV_DRAFTER_QUANT_PATH='must-not-load')
         self.assertEqual(run.returncode,0,run.stderr);e=p['env'];self.assertEqual(e['ATDEV_OPT'],C32)
         self.assertEqual(e['ATDEV_A4_REAL'],'had3')
         self.assertEqual(e['ATDEV_A4_HADW'],'atdev-company/Qwen3.8-27B-atdev-c32:hadamard/qwen38_27b_hadamard_gptq_d10.safetensors')
