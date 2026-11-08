@@ -88,10 +88,14 @@ class GDNAdapter:
     """Preserve release BF16-state ABI while calling the exact selected kernel."""
     def __init__(self,module):self._module=module
     def __getattr__(self,name):return getattr(self._module,name)
+    # Two caller generations: the single-turn release callers pass the short ABI (23 / 27 arguments, bf16 state implied),
+    # the multi-turn gdn_single_state / gdn_a4_fold callers already pass the full ABI of the kernel (26 / 30 arguments).
     def gdn_ss(self,*args):
+        if len(args)==26:return self._module.gdn_ss(*args)
         if len(args)!=23:raise ValueError("unexpected release GDN ABI")
         return self._module.gdn_ss(*args[:17],False,1,*args[17:],0)
     def gdn_ss_a4(self,*args):
+        if len(args)==30:return self._module.gdn_ss_a4(*args)
         if len(args)!=27:raise ValueError("unexpected release folded GDN ABI")
         return self._module.gdn_ss_a4(*args[:17],False,1,*args[17:23],0,*args[23:])
 
@@ -205,8 +209,38 @@ def _had3_pack_store():
 
     return _a4_pack_store
 
-def _int8_rot(y_bf16: torch.Tensor, gs: torch.Tensor):
+_FUSE = os.environ.get("ATDEV_A4ACC_FUSE", "0") == "1"
+_REXT = []
+
+
+def rot_ext():
+    if not _REXT:
+        from torch.utils.cpp_extension import load
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csrc", "a4acc", "rot_i8.cu")
+        _REXT.append(load(name="atdev_a4acc_rot_i8s4", sources=[src], verbose=False,
+                          extra_cuda_cflags=["-O3", "-gencode=arch=compute_80,code=sm_80", "-std=c++17"]))
+    return _REXT[0]
+
+
+def _rq(fn, args, gs, n_next, k, m):
+    """A4ACC: fused rotate+int8 producer; when the consumer will run PF_A4 it also emits the s4 fragments straight from
+    the rotated bf16 values (ATDEV_A4ACC_S4=1) and flags them in marlin_plus.PF_A4_READY."""
+    from atdev_serve import marlin_plus as mp
+    mp.PF_A4_READY[0] = None
+    g = gs.reshape(1).float()
+    if mp.pf_a4_emit_ok(n_next, k, m):
+        b = mp.bufs(args[0].device)
+        q, sc = fn(*args, g, b["a4_pk_big"], b["a4_s_big"], mp.a4_clip())
+        mp.PF_A4_READY[0], mp.PF_A4_READY[1] = q.data_ptr(), m
+        return q, sc
+    return fn(*args, g)
+
+
+def _int8_rot(y_bf16: torch.Tensor, gs: torch.Tensor, n_next: int = 0):
     """rotated per-token int8 (the int8 producers' formula on x H): q, s * input_global_scale"""
+    if _FUSE:
+        y = y_bf16 if (y_bf16.stride(-1) == 1 and y_bf16.stride(0) % 4 == 0) else y_bf16.contiguous()
+        return _rq(rot_ext().rot_quant, (y,), gs, n_next, y.shape[1], y.shape[0])
     from vllm.model_executor.layers.quantization.utils.int8_utils import per_token_quant_int8
     yr = had_ext().had_rot(y_bf16.contiguous())
     q, s = per_token_quant_int8(yr)
@@ -263,15 +297,18 @@ def _register_real_had3() -> None:
         if m == 0 or fq._a4_ent(n_next, n, m) is not None:
             return o_norm(x, residual, weight, eps, gs, want_bf16, n_next)
         xb, _, _, ro = o_norm(x, residual, weight, eps, gs, True, n_next)
-        xq, xs = _int8_rot(xb, gs)
+        xq, xs = _int8_rot(xb, gs, n_next)
         return (xb if want_bf16 else xb[:0]), xq, xs, ro
 
     @functools.wraps(o_silu)
-    def silu_quant(gu, gs, n_next=0):
+    def silu_quant(gu, gs, *rest):  # (gu, gs, n_next) or, in fused_quant, (gu, gs, cfg, n_next)
+        n_next = rest[-1] if rest else 0
         m, n2 = gu.shape
         n = n2 // 2
         if m == 0 or (n_next and fq._a4_ent(n_next, n, m) is not None):
-            return o_silu(gu, gs, n_next)
+            return o_silu(gu, gs, *rest)
+        if _FUSE:
+            return _rq(rot_ext().silu_rot_quant, (gu,), gs, n_next, n, m)
         g, u = gu[:, :n].float(), gu[:, n:].float()
         return _int8_rot((g * torch.sigmoid(g) * u).to(torch.bfloat16), gs)
 
@@ -280,11 +317,17 @@ def _register_real_had3() -> None:
         m, n = a.shape
         if m == 0 or (n_next and fq._a4_ent(n_next, n, m) is not None):
             return o_gate(a, g, gs, n_next)
+        if _FUSE:
+            return _rq(rot_ext().gate_rot_quant, (a, g), gs, n_next, n, m)
         return _int8_rot((a.float() * torch.sigmoid(g.float())).to(torch.bfloat16), gs)
 
     @functools.wraps(o_cs)
     def cs_mp_linear(x, w_q, w_s, gs, n, k):
-        _HFLAG[0] = (n, k) in _TARGET_NK
+        # A4ACC: the flag asks the proxy quant_a4 to rotate; set it only when cs_mp_linear takes its own small-M
+        # quant_a4 path. For large M it falls back to mp_linear (which rotates via had_rot) and a set flag would
+        # make PF_A4's quant_a4 rotate a second time.
+        _ent = mp.lookup(n, k, x.shape[0], True) if x.shape[0] > 0 else None
+        _HFLAG[0] = (n, k) in _TARGET_NK and _ent is not None and bool(_ent.get("a4")) and x.shape[0] <= 16 * _ent["cfg"][4]
         try:
             return o_cs(x, w_q, w_s, gs, n, k)
         finally:
