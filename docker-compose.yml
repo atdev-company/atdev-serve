@@ -1,6 +1,8 @@
 # One-command start:
-#   docker compose --profile c1 up --build     # single-user stack   (http://127.0.0.1:8100)
-#   docker compose --profile c32 up --build    # 32-concurrent stack (http://127.0.0.1:8100)
+#   docker compose --profile c1 up --build     # single-user stack, multiturn profile (http://127.0.0.1:8100)
+#   docker compose --profile c1-single up --build   # single-user stack, previous launch (no prefix caching)
+#   docker compose --profile c32 up --build    # 32-concurrent stack, multiturn profile (http://127.0.0.1:8100)
+#   docker compose --profile c32-single up --build   # 32-concurrent stack, previous launch (no prefix caching)
 # Env (optional, e.g. in a .env file next to this file):
 #   ATDEV_GPU   host GPU index to use (default 0)      ATDEV_PORT  host port (default 8100)
 #   HF_TOKEN    Hugging Face token, only if your network/account needs one
@@ -31,6 +33,10 @@ services:
     <<: *atdev
     profiles: ["c1"]
     command: ["c1"]
+  atdev-c1-single:
+    <<: *atdev
+    profiles: ["c1-single"]
+    command: ["c1-single"]
   atdev-c1-accuracy:
     <<: *atdev
     profiles: ["c1-accuracy"]
@@ -39,6 +45,11 @@ services:
     <<: *atdev
     profiles: ["c32"]
     command: ["c32"]
+
+  atdev-c32-single:
+    <<: *atdev
+    profiles: ["c32-single"]
+    command: ["c32-single"]
 
 volumes:
   hf-cache:

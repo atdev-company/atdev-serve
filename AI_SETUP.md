@@ -75,7 +75,7 @@ GPUs: judge P2 / P4 only by the row for the chosen index.
 
 **Choose the stack.** `c1` is tuned for c=1, i.e. 1 client (a single user, one request at a time);
 `c32` is tuned for c=32, i.e. 32 concurrent clients (32 requests in flight). Use `c1` (lowest latency
-per request, original W3 maximum-speed profile) unless the user asks for improved measured broad accuracy: then use `c1-accuracy`, which disables W3 but retains the same drafter and engine. For many concurrent users or throughput, use `c32`, which ships only Hadamard W4A4 with built-in MTP. Set `STACK=c1`, `STACK=c1-accuracy`, or `STACK=c32`. Do not silently change a user-selected profile. The up-to-14.2x headline belongs only to C1 fast; inspect [docs/ACCURACY.md](docs/ACCURACY.md) for all score and speed differences.
+per request, original W3 maximum-speed profile) unless the user asks for improved measured broad accuracy: then use `c1-accuracy`, which disables W3 but retains the same drafter and engine. For many concurrent users or throughput, use `c32`, which ships only Hadamard W4A4 with built-in MTP. For agents or chat clients that resend a long growing conversation, `c1` (the default) now runs the multiturn profile (prefix caching, 131,072-token context, a start-up warmup; 3.7% slower than the old launch on single requests); `STACK=c1-single` selects the old no-prefix-cache launch; `c32` likewise runs the multiturn profile (prefix caching for 32 sessions) and `STACK=c32-single` the previous launch. Set `STACK=c1`, `STACK=c1-single`, `STACK=c1-accuracy`, `STACK=c32`, or `STACK=c32-single`. Do not silently change a user-selected profile. The up-to-14.2x headline belongs only to C1 fast with the single profile; inspect [docs/ACCURACY.md](docs/ACCURACY.md) for all score and speed differences.
 
 ## Phase 2A: install with Docker
 
@@ -134,10 +134,12 @@ source "$REPO/atdev-env.sh"
 export CUDA_VISIBLE_DEVICES=<gpu index from P4>
 LOG="$REPO/server_$STACK.log"
 case "$STACK" in
-  c1) START_SCRIPT=serve_c1.sh ;;
+  c1) START_SCRIPT=serve_c1.sh ;;                                # multiturn profile (prefix caching, 131072 context)
+  c1-single) START_SCRIPT=serve_c1.sh; export PROFILE=single ;;  # previous launch: no prefix caching, 8192 context
   c1-accuracy) START_SCRIPT=serve_c1_accuracy.sh ;;
-  c32) START_SCRIPT=serve_c32.sh ;;
-  *) echo "Choose c1, c1-accuracy or c32"; exit 2 ;;
+  c32) START_SCRIPT=serve_c32.sh ;;                                # multiturn profile (prefix caching, 16384 context)
+  c32-single) START_SCRIPT=serve_c32.sh; export PROFILE=single ;;  # previous launch: no prefix caching, 8192 context
+  *) echo "Choose c1, c1-single, c1-accuracy, c32 or c32-single"; exit 2 ;;
 esac
 nohup setsid bash -c 'echo $$ > "$1"; exec "./$2"' _ "$REPO/server_$STACK.pid" "$START_SCRIPT" > "$LOG" 2>&1 &
 # the PID file holds the process-group leader (used by Phase 8)
@@ -187,7 +189,7 @@ cache.
 
 ### Optional 262,144-token context
 
-The default launch limit is 8,192 total tokens (input + output). If the user requests the full native context, start **C1 Fast W3 or C32 Hadamard W4A4** with `--max-model-len 262144` appended to its launch command. If a server is already running, stop only the owned server before restarting it with the new limit.
+The default launch limit of `c1-single` and `c32-single` is 8,192 total tokens (input + output); `c1` (multiturn) starts with 131,072 and `c32` (multiturn) with 16,384, and neither was tested with 262,144. If the user requests the full native context, start **C1 Fast W3 (`c1-single`) or C32 Hadamard W4A4 (`c32-single`)** with `--max-model-len 262144` appended to its launch command. If a server is already running, stop only the owned server before restarting it with the new limit.
 
 Both profiles passed a single-A100-80GB test with **261,583 input + 21 output = 261,604 total tokens**, correctly retrieving three codes from the beginning, middle and end of a synthetic long input. Keep request `max_tokens` within the remaining context. Published speed benchmarks still use the 8,192-context preset and an output cap of 1,024 tokens.
 

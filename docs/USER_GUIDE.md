@@ -33,11 +33,13 @@ user, one request at a time), and **c32** for c=32, i.e. 32 concurrent clients (
 
 | if you... | run | what you get |
 |---|---|---|
-| serve one user at a time, or a few, and care about how fast each answer streams | **c1** (`serve_c1.sh`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings) |
+| run an agent or chat client that resends a growing conversation (long context, many turns) | **c1 multiturn** (`serve_c1.sh`, the default) | prefix caching and 131,072-token context: 2.3x-3.8x faster than the best stock vLLM on a 100k-token agent trace; about 394 tokens/s per single request ([MULTITURN.md](MULTITURN.md)) |
+| serve one user at a time with independent single-shot requests | **c1 single** (`serve_c1.sh --profile single`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings), no prefix caching, 8,192-token context |
 | prioritize measured broad accuracy over the maximum C1 speed | **c1-accuracy** (`serve_c1_accuracy.sh`) | W3 disabled, same drafter; 357.17 tok/s; see [all scores](ACCURACY.md) |
-| serve many users at once and care about total throughput | **c32** (`serve_c32.sh`) | Hadamard W4A4 only: 2,688.13 aggregate tokens/s in one run at c=32 (vs historical 1,757.1 best stock vLLM) |
+| serve many multi-turn sessions at once, or many users with long shared prefixes | **c32 multiturn** (`serve_c32.sh`, the default) | Hadamard W4A4 with prefix caching: 1.57x-1.58x faster than the best stock vLLM on 32-session traces ([MULTITURN.md](MULTITURN.md)) |
+| serve many independent short requests at once | **c32 single** (`serve_c32.sh --profile single`) | Hadamard W4A4 only: 2,688.13 aggregate tokens/s in one run at c=32 (vs historical 1,757.1 best stock vLLM) |
 
-The 14.2x / 2.08x maximum-speed claims belong only to C1 fast (`serve_c1.sh`). C1 accuracy changes only the W3 path and reuses the same drafter; C32 requires a Hadamard sidecar, not an external drafter. [Full accuracy, speed and limitations](ACCURACY.md).
+The 14.2x / 2.08x maximum-speed claims belong only to C1 fast with `--profile single`. C1 accuracy changes only the W3 path and reuses the same drafter; C32 requires a Hadamard sidecar, not an external drafter. [Full accuracy, speed and limitations](ACCURACY.md).
 
 Both stacks accept any number of requests, but each is tuned for its load. Run one stack per GPU.
 
@@ -228,7 +230,12 @@ The launch scripts read these environment variables:
 | `CUDA_VISIBLE_DEVICES` | 0 | which GPU to use |
 | `MODEL` | `RedHatAI/Qwen3.8-27B-INT4` | target checkpoint (HF id or local path) |
 | `HF_REPO` (c1) | `atdev-company/Qwen3.8-27B-atdev-c1` | HF repo with the c1 model-side files (subfolders `w3/`, `drafter/`) |
-| `C1_MODE` | `fast` | `accuracy` disables W3 only; `serve_c1_accuracy.sh` selects this explicitly |
+| `C1_MODE` | `fast` | `accuracy` disables W3 only; `serve_c1_accuracy.sh` selects this explicitly (implies `--profile single`) |
+| `PROFILE` / `--profile` | `multiturn` (c1 and c32) | `multiturn`: prefix caching + long context; `single`: the previous launch |
+| `MAX_MODEL_LEN` | 131072 (c1 multiturn), 16384 (c32 multiturn), 8192 (single) | context length of the profile |
+| `NO_WARMUP` (multiturn) | 0 | `1` skips the start-up JIT warmup |
+| `ATDEV_EOR_CKPT` (multiturn) | 0 | `1` enables the optional end-of-reply checkpoint (C32 then uses `--gpu-memory-utilization 0.93`); see [MULTITURN.md](MULTITURN.md) |
+| `ATDEV_PF_A4` (c32 multiturn) | 1 | `0` disables the 4-bit prefill GEMM (prefill through the 8-bit path, slower) |
 | `HADW` (c32) | `atdev-company/Qwen3.8-27B-atdev-c32:hadamard/qwen38_27b_hadamard_gptq_d10.safetensors` | selected Hadamard sidecar, HF file spec or local path; no W4A8 fallback |
 | `W3_OVERLAY` (C1 fast only) | `$HF_REPO:w3/` | 3-bit overlay: `repo:folder/`, `repo:path/file.safetensors`, or comma-separated local `.safetensors` paths |
 | `DRAFTER` (c1) | `$HF_REPO:drafter/` | drafter: `repo:folder/` or a local dir |
@@ -237,10 +244,10 @@ The launch scripts read these environment variables:
 
 The default context length is 8,192 total tokens (`--max-model-len 8192`, input + output). The speed benchmarks use an output cap of 1,024 tokens.
 
-**C1 Fast W3 and C32 Hadamard W4A4 support up to 262,144 total context tokens.** To select it when starting the server:
+**C1 Fast W3 (`--profile single`) and C32 Hadamard W4A4 support up to 262,144 total context tokens.** The C1 `multiturn` default and C32 `multiturn` use 131,072 and 16,384 and were not tested beyond that. To select it when starting the server:
 
 ```bash
-./serve_c1.sh --max-model-len 262144
+./serve_c1.sh --profile single --max-model-len 262144
 # Or, for C32: ./serve_c32.sh --max-model-len 262144
 ```
 

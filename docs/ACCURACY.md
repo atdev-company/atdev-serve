@@ -19,6 +19,15 @@ All broad scores below are actual saved greedy generations, with thinking disabl
 | GSM8K-1319 | 1248/1319 (94.62%) | 1253/1319 (95.00%) | 1250/1319 (94.77%) | 1249/1319 (94.69%) |
 | Long-context retrieval | — | 36/36 | 36/36 | 36/36 |
 
+## Multi-turn profiles
+
+`serve_c1.sh` (default, `multiturn`) and `serve_c32.sh` (default, `multiturn`) add prefix caching and chunked-prefill kernels to the
+C1 fast and C32 Hadamard stacks. Their gate and broad scores were measured on the frozen bundles with the prefix cache on and are listed in
+[MULTITURN.md](MULTITURN.md#accuracy-of-the-multi-turn-profiles). In short: C1 `multiturn` matches C1 fast within sample noise
+(GSM8K-1319 94.24% against stock INT4 94.31%, long-context 36/36, MMLU-Pro 69.0%, KMMLU 63.8%, perplexity 8.28). C32 `multiturn`
+(same rotated sidecar, rotation-aware 4-bit prefill GEMM) gives GSM8K-1319 94.39%, long-context 36/36, MMLU-Pro 71.4%, KMMLU 67.6%,
+HumanEval+ 89.0%, perplexity 7.365; its IFEval prompt-strict score (80.2%) is 3 points under stock INT4 and is being re-checked.
+
 ## Speed and comparison limits
 
 | Released profile | Speed | vs best stock-vLLM historical speed | vs original bf16 historical speed |

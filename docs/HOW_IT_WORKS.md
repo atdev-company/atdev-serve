@@ -157,6 +157,27 @@ sequenceDiagram
   needed, and an argmax-only greedy verify path (+1.8%).
 * `draft_vocab`: 64k int4 draft vocabulary for the MTP drafts (+3%).
 
+## The multi-turn profiles
+
+`serve_c1.sh` (default) and `serve_c32.sh --profile multiturn` add the pieces below to the stacks above. Measured results and caveats:
+[MULTITURN.md](MULTITURN.md). Each piece is its own switch (`ATDEV_*`, set by the launch scripts). The ones marked "rounding" or "numerics" are not
+bit-identical to the single-turn launch; the accuracy gates in [MULTITURN.md](MULTITURN.md) were run with all of them on.
+
+* **Prefix caching for the tree and MTP stacks** (`ATDEV_DFT_APC`, `ATDEV_GDN_SS_ALIGN`, `disable_eagle_block_drop`). vLLM's hybrid prefix cache needs a
+  recurrent-state snapshot at every cached position. `gdn_ss_align` rebuilds the state of an aligned position from the single-state slot plus the token log,
+  and the tree verifier re-bases its state tables on the aligned slot, so the DFlash tree and the MTP chain both work with `--mamba-cache-mode align`.
+  `ATDEV_SWA_FINE` gives the drafter's sliding-window layers fine-grained (16-token) hits.
+* **Faster prefill of what is new.** FlashAttention-2 for prefill and mixed steps (`ATDEV_PF_FA2`, rounding), a gathered-KV variant for long chunks
+  (`ATDEV_PF_FA2_GATHER`) and FlashInfer split-KV for short tails at long context (`ATDEV_PF_FA2_FI`, rounding); FlashInfer fa2 paged attention for the prefill
+  rows of C32 mixed steps (`ATDEV_PF_FI`, rounding); fused prefill epilogues (`ATDEV_PF_FUSE`, `ATDEV_PF_GLUE`); int8 activations / a dequantize-once int8 GEMM for the W3 weights
+  at large M (`ATDEV_W3_I8`, `ATDEV_W3_DQ`, rounding); a recurrent kernel for tiny GDN chunks (`ATDEV_GDN_SMALL`, rounding); the tree-attention head split picked by context
+  length (`ATDEV_TREE_HSPL=auto`, rounding); C32: tuned Marlin launch configs for prefill (`ATDEV_PF_MP`) and a 4-bit prefill GEMM (`ATDEV_PF_A4`, numerics change).
+* **Front end and start-up.** A per-segment tokenization cache for growing chat histories (`ATDEV_TOK_CACHE`) and a start-up warmup (`atdev_serve.warmup`) that sends
+  synthetic conversations so that the Triton kernels are compiled before the first real request.
+* **Optional end-of-reply checkpoint** (`ATDEV_EOR_CKPT`, off by default). While a request decodes, the worker writes a state snapshot into a small per-request ring each
+  time the sequence crosses a snapshot boundary (every 16 or 32 tokens); when the request finishes the scheduler registers the newest one under the prefix hash of the
+  generated tokens, so the next turn can hit through the reply. See [MULTITURN.md](MULTITURN.md) for its cost.
+
 ## Feature flags
 
 Features are switched on with `ATDEV_OPT`; each launch script also sets the few kernel options that differ between the two stacks:
@@ -164,7 +185,10 @@ Features are switched on with `ATDEV_OPT`; each launch script also sets the few 
 | stack | `ATDEV_OPT` |
 |---|---|
 | c=1 | `gdn_single_state, dflash_tree, attn_split_verify, gdn_meta_fast, shadow_head, draft_vocab, marlin_plus, ba_gemv, c1_fuse, drafter_ctxfold, w3_mixed, verify_split_head, drafter_w4, tree_attn, ll1_fuse, ll5_fuse` |
-| c=32 | `draft_vocab, gdn_single_state, verify_split_head, mtp_w4, marlin_plus, fused_quant, vsplit_mtp, gdn_a4_fold, mtp_prune, c32_attn, di1_varlen, c32_conv, c32k_fuse` |
+| c=32 (Hadamard, `--profile single`) | `a4_sim, draft_vocab, gdn_single_state, verify_split_head, mtp_w4, marlin_plus, fused_quant, vsplit_mtp, gdn_a4_fold, mtp_prune, c32_attn, di1_varlen, c32_conv, c32k_fuse` |
+| c=32 `multiturn` | `draft_vocab, gdn_single_state, verify_split_head, mtp_w4, marlin_plus, fused_quant, vsplit_mtp, gdn_a4_fold, mtp_prune, c32_attn, di1_varlen, c32_conv, c32k_fuse` (+ `pf_fa2`, `pf_fi` through `ATDEV_PF_FA2=1`, `ATDEV_PF_FI=1`) |
+
+The c=1 `multiturn` profile uses the same `ATDEV_OPT` list as c=1 (plus `pf_fa2` through `ATDEV_PF_FA2=1`).
 
 On start-up the server log prints `atdev-serve: enabled optimizations: [...]`. An unknown name
 stops the server with an error, so a typo cannot silently fall back to stock vLLM. Every feature is a runtime patch, so the vLLM files on disk are never changed.

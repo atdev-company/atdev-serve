@@ -41,3 +41,11 @@ The FineWeb dataset cards also refer to [Common Crawl terms](https://commoncrawl
 - Added C32 Hadamard sidecar: 12,543,701,944 bytes; SHA256 `608aef5bf2569e183845cd61ecb783385f61b491603912002d753edcca14728b`.
 
 Source calibration pool fingerprint (for provenance, not a downloadable dataset in this repo): SHA256 `2b1ad573e8587bdd19ba2efd17ce61c1ff4a6609ecba536f1530a7a760561667`.
+
+## Multi-turn benchmark traces
+
+The scripted conversations used for the multi-turn speed tables (trace v5, v5-c32) are built from `HuggingFaceH4/ultrachat_200k` (MIT) and
+`openai/gsm8k` (MIT); the assistant turns in the history are the datasets' reference replies truncated to 300 tokens. The traces are
+not redistributed in this repository. The `multiturn` profiles need no extra model files: C1 reuses the existing W3 overlay and drafter,
+C32 uses the INT4 checkpoint only. The draft-vocabulary order shipped in `atdev_serve/data/token_order.npy` is measured on the clean
+generation pool described above.

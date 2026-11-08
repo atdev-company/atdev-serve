@@ -78,7 +78,7 @@
     "src/atdev_serve/gdn_single_state.py": "d7550b04ebc442f3cf0d1b1bf0de12f8d4a5ee940e449c1acff335c0eac02760",
     "src/atdev_serve/fused_quant.py": "df9287320dbf073cb9ba16bc6a36b53ac82455fed68712de9b79299b58a51227",
     "tests/test_release_profiles.py": "82ed048ce3554b1bc10ac57d5443c42c6adf8b206886fa1412e1981f38a18027",
-    "tests/test_hadamard_release.py": "18017ba9e3a6e5e08ab9f60cbe1f8e5da5c1b3caa00329810b815f785eb2287f",
+    "tests/test_hadamard_release.py": "c8e2f8bdb9c26109d1e4764f2e80b5d0b539c4e7d9e15c3b1fd305260d7f778a",
     "src/atdev_serve/csrc/acc_c32/a4_had.cu": "19248fab51212bd099957ed3086fc168e07af08a88c277b5e5a73f44abee2705",
     "src/atdev_serve/csrc/c32_prod_h.cu": "63df57f16f5e3762f808d3cc9e9c8dae386cd122d384e9b8ea9f9a5b23210f75",
     "src/atdev_serve/csrc/c32c_csum_h.cu": "e19845b5c43a37e68d85272044e248e0dc76fe5dc517976d82bbcf0589f4a55a",

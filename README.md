@@ -11,6 +11,7 @@
 - **14.2×** faster single-user decoding with **C1 fast (W3)** than the original bf16 model on stock vLLM (28.9 → **408.9 tok/s**)
 - **2.08×** faster than the best stock-vLLM configuration we could find (196.5 → 408.9 tok/s)
 - **4.0×** more throughput at 32 concurrent requests with **C32 Hadamard W4A4** than bf16 on stock vLLM, and **1.53×** more than the best vLLM settings (→ **2,688.1 tok/s**, single measured run)
+- **Up to 3.8x faster multi-turn and agent workloads** (growing conversations, prefix caching, up to 111k-token context) than the best stock-vLLM setting at C1, and 1.5-1.7x at C32 ([details](docs/MULTITURN.md))
 - Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API
 - 🤗 Model files on Hugging Face: [atdev-company/Qwen3.8-27B-atdev-c1](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) (W3 overlay + DFlash2 drafter); [C32 Hadamard weights](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c32), downloaded automatically as needed
 
@@ -69,11 +70,52 @@ Two kinds of results are reported separately:
 
 The original **GSM8K/long-context development gates** below pass: GSM8K stays within 1 point of its matching stock-vLLM reference and long-context retrieval is 36/36. These narrow gates do not establish unchanged broad accuracy; see [all per-profile scores and known gaps](docs/ACCURACY.md). Details and the measurement method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+## Multi-turn and agent workloads
+
+Agents and chat clients resend a growing conversation on every turn. The new **`multiturn`** profiles cache the
+conversation state (attention KV and the recurrent GDN state), prefill only the new part of each turn, and use
+faster prefill kernels for what remains. `./serve_c1.sh` now starts this profile by default
+(`./serve_c1.sh --profile single` is the previous launch); `./serve_c32.sh` is the C32 version (`--profile single` is its previous launch).
+
+Wall-clock time of a scripted agent conversation (2 sessions x 38 turns, context growing from 5k to 111k tokens,
+output capped per turn; cold start, median of 3 runs, same A100 for both arms; stock = the fastest stock vLLM 0.31.0
+setting we found, with prefix caching on):
+
+| Output cap per turn | stock vLLM | atdev-serve C1 `multiturn` | speedup | original bf16 + vLLM |
+|---|---:|---:|---:|---:|
+| 128 tokens | 268.6 s (34.7 tok/s) | **116.0 s (82.2 tok/s)** | **2.32x** | 593.4 s |
+| 512 tokens | 623.1 s (52.0 tok/s) | **205.2 s (159.4 tok/s)** | **3.04x** | 1,497.5 s |
+| 2048 tokens | 1,136.3 s (58.4 tok/s) | **301.2 s (198.6 tok/s)** | **3.77x** | 2,716.3 s |
+
+32 concurrent sessions of 7 turns (2k to 10.5k tokens), same method: **1.57x / 1.57x / 1.58x** faster than the
+fastest stock setting at caps 128 / 512 / 2048 (73.4 / 117.6 / 199.1 s against 115.1 / 184.3 / 314.0 s). With the optional end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`) and conversations
+that feed back the server's own replies, C32 reaches 1.50x / 1.58x. For the same agent trace the GPU used 0.49x / 0.40x / 0.33x
+the energy of stock vLLM (C1; C32: 0.63x-0.64x). Tables, method, power and the live-reply numbers are in [docs/MULTITURN.md](docs/MULTITURN.md).
+
+What to know before switching:
+
+* **Single-request decode is 3.7% slower** in `multiturn` than in `single` (394.4 vs 409.5 mean decode tok/s on the
+  96-prompt benchmark; still 2.01x best stock vLLM). Use `--profile single` for pure single-shot generation.
+* **Full-stack numbers.** They include the model-side parts (W3 overlay, re-trained drafter, int8 activations in prefill, and for
+  C32 4-bit activations). We have not measured an engine-only multi-turn speedup; the engine-only figures above (1.45x / 1.22x) are single-turn.
+* **bf16 KV cache.** The fast path keeps the KV cache in bf16; an int8 KV-cache kernel exists but is parked
+  (corrupt outputs after a prefix hit). C1 `multiturn` holds 284,569 KV tokens at 131,072 context.
+* **C32 accuracy.** The C32 `multiturn` profile is the Hadamard W4A4 stack (same rotated sidecar as before) with a rotation-aware 4-bit prefill GEMM:
+  MMLU-Pro 71.4, KMMLU 67.6, HumanEval+ 89.0, perplexity 7.37, GSM8K-1319 94.39%, long-context 36/36 (stock INT4: 71.5 / 67.1 / 90.2 / 7.30 / 94.31%).
+  IFEval prompt strict is 80.2 (stock 83.4) and is being re-checked. `ATDEV_PF_A4=0` disables the 4-bit prefill GEMM.
+* **Where the numbers come from.** Speed and the broad accuracy scores were measured on our research runtime; this repository's tree was checked against them
+  (C1 outputs identical on 76 of 76 turns, speed within 1%, perplexity and GSM8K-300 reproduced). Details in [docs/MULTITURN.md](docs/MULTITURN.md#where-the-numbers-come-from).
+  C32 `multiturn` is a full-stack result: it uses the rotated Hadamard weights.
+* Only greedy decoding is qualified, and a continuation from cached state is not byte-identical to an uncached one
+  (floating-point rounding at cache-block edges; task accuracy was checked, see [docs/MULTITURN.md](docs/MULTITURN.md)).
+* **Optional end-of-reply checkpoint** (`ATDEV_EOR_CKPT=1`, off by default): reuses the server's own previous reply.
+  C32 live conversations 3-12% faster (measured on the previous C32 bundle); costs 1.3-2.7% where replies cannot be reused and 3% more GPU memory.
+
 ## Context length
 
 **Up to 262,144 total context tokens (input + output)** are supported by the C1 Fast W3 and C32 Hadamard W4A4 profiles. Each was tested on a **single A100 80GB** with **261,583 input tokens + 21 output tokens = 261,604 total tokens**, correctly retrieving all three codes placed at the beginning, middle and end of a synthetic long input.
 
-Pass `--max-model-len 262144` to the selected launch script. The default remains 8,192 total context tokens; the published speed benchmarks use an output cap of 1,024 tokens. This record is a single long-request functional test for each profile.
+Pass `--max-model-len 262144` to the selected launch script (`--profile single`; the 262,144-token record was measured on the single-turn launches, the C1 `multiturn` default is 131,072 and has not been tested beyond that). The default of `single` and the Hadamard `serve_c32.sh` remains 8,192 total context tokens; the published speed benchmarks use an output cap of 1,024 tokens. This record is a single long-request functional test for each profile.
 
 ## Quick start
 
@@ -86,11 +128,13 @@ an explicit request value takes precedence. Published speed and accuracy measure
 
 | Profile | Launch | Target weights | Extra model files | Measured speed |
 |---|---|---|---|---:|
-| **C1 fast (default)** | `./serve_c1.sh` | original W3 overlay on the INT4 checkpoint | existing W3 overlay + existing DFlash2 d16 drafter | **408.9 tok/s** published headline |
+| **C1 fast, multiturn (default)** | `./serve_c1.sh` | original W3 overlay on the INT4 checkpoint | existing W3 overlay + existing DFlash2 d16 drafter | **394.4 tok/s** single-request decode (**2.32x-3.77x** on multi-turn traces vs best stock vLLM) |
+| **C1 fast, single** | `./serve_c1.sh --profile single` | same | same | **408.9 tok/s** published headline |
 | **C1 accuracy** | `./serve_c1_accuracy.sh` | stock RedHatAI INT4; W3 disabled | same existing DFlash2 d16 drafter; **no W3 download** | **357.17 tok/s**, two runs |
-| **C32 Hadamard W4A4** | `./serve_c32.sh` | Hadamard-rotated GPTQ INT4 sidecar; W4A4 verification retained | Hadamard sidecar; built-in MTP, **no external drafter** | **2,688.13 aggregate tok/s**, one run at c=32 |
+| **C32 multiturn (default)** | `./serve_c32.sh` | Hadamard-rotated GPTQ INT4 sidecar; W4A4 verification and a rotation-aware 4-bit prefill GEMM | Hadamard sidecar; built-in MTP, **no external drafter** | **1.57x-1.58x** on 32-session multi-turn traces vs best stock vLLM |
+| **C32 Hadamard W4A4, single** | `./serve_c32.sh --profile single` | same sidecar; no prefix caching, 8,192 context | same | **2,688.13 aggregate tok/s**, one run at c=32 |
 
-The **up to 14.2x / 2.08x maximum-speed claims belong to C1 fast**, not C1 accuracy.
+The **up to 14.2x / 2.08x maximum-speed claims belong to C1 fast (`--profile single`)**, not C1 accuracy and not the `multiturn` default (which is 3.7% slower on single requests and much faster on multi-turn traces).
 C1 accuracy keeps the drafter, verification head and engine settings, and disables only the W3
 weight overlay/path. It improves the measured broad accuracy and PPL relative to C1 fast, at a
 speed cost; it is not a promise of identical INT4 outputs or perfect scores on every task.
@@ -119,9 +163,9 @@ docker compose --profile c1 up --build        # single-user stack on port 8100
 git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
 ./install.sh                 # checks the machine, creates .venv, installs vllm==0.31.0 + atdev-serve
 source atdev-env.sh          # activates .venv and sets CUDA_HOME for the kernel build
-./serve_c1.sh                # C1 fast (original W3, maximum-speed headline)
+./serve_c1.sh                # C1 fast, multiturn profile (prefix caching, 131072 context); --profile single for the 408.9 tok/s launch
 # ./serve_c1_accuracy.sh      # C1 accuracy (W3 disabled, same drafter)
-# ./serve_c32.sh              # C32 Hadamard W4A4, built-in MTP
+# ./serve_c32.sh              # C32 Hadamard W4A4, multiturn profile (prefix caching for 32 concurrent sessions); --profile single for the previous launch
 ```
 
 The first start JIT-compiles the CUDA kernels and downloads the models, so it is slow. Later starts

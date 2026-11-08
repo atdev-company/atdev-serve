@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Container entrypoint.  c1 | c32 [extra vllm serve args]  -> launch that stack
+# Container entrypoint.  c1 | c1-single | c1-accuracy | c32 | c32-single [extra vllm serve args]  -> launch that stack
 #                        check                              -> print versions / GPU / nvcc and exit
 #                        anything else                      -> run it as a command (e.g. bash)
 set -euo pipefail
@@ -8,8 +8,10 @@ stack=${1:-c1}
 [ $# -gt 0 ] && shift
 case $stack in
   c1)  exec ./serve_c1.sh "$@" ;;
+  c1-single) exec ./serve_c1.sh --profile single "$@" ;;
   c1-accuracy) exec ./serve_c1_accuracy.sh "$@" ;;
   c32) exec ./serve_c32.sh "$@" ;;
+  c32-single) exec ./serve_c32.sh --profile single "$@" ;;
   check)
     nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader || echo "no GPU visible"
     nvcc --version | grep -m1 'release' || echo "nvcc not found"

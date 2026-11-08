@@ -92,6 +92,31 @@ Notes on the ladder:
   drafter, and an int8 + int4 split verify head. c=32: W4A4 activations on the large verify GEMMs, an
   int4 MTP head, and an int4 verify-head screen with exact bf16 rescoring.
 
+## Multi-turn traces
+
+The `multiturn` profiles are measured on scripted conversations instead of the 96-prompt workload above; see
+[MULTITURN.md](MULTITURN.md) for the tables.
+
+* **trace v5 (C1)**: 2 sessions x 38 turns, context from about 5k to 111k tokens. Each user message pastes about 2k
+  tokens of new dialogue transcripts and ends with a question; the history in a request is the dataset's reference assistant reply, truncated to 300 tokens, so
+  every arm receives identical prompts (nothing model-generated enters the history). Built from
+  `HuggingFaceH4/ultrachat_200k` and `openai/gsm8k` (both MIT).
+* **trace v5-c32 (C32)**: 32 sessions x 7 turns, 2k to 10.5k tokens, all sessions in flight at once.
+* **Metric**: wall-clock seconds for the whole trace at output caps of 128 / 512 / 2048 tokens per turn (`max_tokens`,
+  greedy, thinking off), prefix cache reset before every run, one discarded warm-up conversation, median of 3 runs.
+  Output tok/s = generated tokens / wall seconds, prefill included.
+* **Baselines**: stock vLLM 0.31.0 on the same RedHatAI INT4 checkpoint with `--enable-prefix-caching --mamba-cache-mode align
+  --enable-mamba-shared-prefix-checkpoint --prefix-match-unit 16`, the fastest of several backend and speculative
+  settings for each cell (C1: default attention backend, no speculation; C32: int8 activations, MTP k=3, `TRITON_ATTN` or
+  the default backend); the bf16 original with the same flags as a second reference.
+* **Live replies**: the client feeds back each arm's own generated reply (so output differs between arms); reported separately.
+* **Power**: NVML at 1 Hz, energy from the GPU counter.
+
+The trace files and the client are not part of this repository (they are built from public datasets by a script that is
+not shipped here). Any client that replays a growing chat history with a fixed `max_tokens` against both servers and
+resets the prefix cache between runs (`POST /reset_prefix_cache`, available when the server runs with `VLLM_SERVER_DEV_MODE=1`)
+measures the same effect; absolute numbers depend on the trace.
+
 ## Accuracy gates
 
 These are the original narrow development gates. They do not assert unchanged MMLU, Korean, instruction-following, code or PPL scores; the complete released-profile measurements and known gaps are in [ACCURACY.md](ACCURACY.md).
