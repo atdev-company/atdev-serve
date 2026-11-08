@@ -65,11 +65,20 @@ OPTIMIZATIONS: dict[str, str] = {
     "ll5_fuse": "atdev_serve.ll5_fuse:register",
     # bit-identical fusions of the c=32 MTP-pass / verify-screen glue
     "c32k_fuse": "atdev_serve.c32k_fuse:register",
+    # prefill / mixed attention through FlashAttention-2 (rounding-level difference to TRITON_ATTN; ATDEV_PF_FA2=1 adds it)
+    "pf_fa2": "atdev_serve.pf_fa2:register",
+    # c=32 multi-turn: FlashInfer fa2 paged attention for the prefill rows of prefill / mixed steps (ATDEV_PF_FI=1 adds it)
+    "pf_fi": "atdev_serve.pf_fi:register",
 }
 
 
 def enabled() -> set[str]:
-    return {s.strip() for s in os.environ.get("ATDEV_OPT", "").split(",") if s.strip()}
+    opts = {s.strip() for s in os.environ.get("ATDEV_OPT", "").split(",") if s.strip()}
+    if os.environ.get("ATDEV_PF_FA2", "0") == "1":
+        opts.add("pf_fa2")
+    if os.environ.get("ATDEV_PF_FI", "0") == "1":
+        opts.add("pf_fi")
+    return opts
 
 
 def register_all():
@@ -88,11 +97,16 @@ def register_all():
             f"known: {sorted(OPTIMIZATIONS)}"
         )
     log.warning("atdev-serve: enabled optimizations: %s", sorted(opts))
+    if os.environ.get("ATDEV_DFT_APC", "0") == "1":  # tree DFlash under prefix caching (align) needs the wrapped copies
+        os.environ.setdefault("ATDEV_GDN_SS_ALIGN", "1")
     # Determinism: fixed FLA prefill / Inductor reduction configs instead of timing-based autotuning.
     from atdev_serve import compile_cache, pin_autotune
     pin_autotune.register()
     pin_autotune.register_inductor()
     compile_cache._SALTS["pin_autotune"] = "2"  # artifacts compiled with timing-picked configs are not reused
+    if os.environ.get("ATDEV_EOR_CKPT", "0") == "1":  # end-of-reply GDN/conv state checkpoint, so a reply is reusable by the next turn (optional, OFF by default)
+        from atdev_serve import eor_ckpt
+        eor_ckpt.install()
     from atdev_serve.compile_cache import salt_aot_cache
 
     for name in sorted(opts):
@@ -102,3 +116,15 @@ def register_all():
         # ATDEV run share torch.compile AOT artifacts with stock vLLM.
         salt_aot_cache(name, module.__file__)
         getattr(module, func_name)()
+    if os.environ.get("ATDEV_SWA_FINE", "0") == "1":  # fine-grained prefix hits for the sliding-window drafter group
+        from atdev_serve import swa_fine
+        swa_fine.install()
+    if os.environ.get("ATDEV_TOK_CACHE", "0") == "1":  # frontend: per-segment tokenization cache
+        from atdev_serve import tok_cache
+        tok_cache.install()
+    if int(os.environ.get("ATDEV_GDN_SMALL", "0")) > 0:  # tiny GDN prefill chunks: recurrent kernel instead of chunked FLA
+        from atdev_serve import gdn_small
+        gdn_small.install()
+    if os.environ.get("ATDEV_STEPLOG"):
+        from atdev_serve import steplog
+        steplog.install()

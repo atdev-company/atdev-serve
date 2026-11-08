@@ -30,6 +30,7 @@ import logging
 import torch
 
 from atdev_serve import c1_norm as cn
+from atdev_serve import prefill_fuse as _PF
 
 try:
     from vllm.utils.torch_utils import LayerNameType
@@ -72,8 +73,18 @@ def _log_once():
         log.warning("atdev %s: fused norm/SiLU epilogues ENGAGED (marlin_c1, M=9..16)", OPT_NAME)
 
 
+def _pg_on(m: int) -> bool:
+    from atdev_serve import pf_glue, w3_mixed
+    return pf_glue.enabled() and m > 16 and m >= w3_mixed._I8_MIN_M
+
+
 def _unperm_silu(gu: torch.Tensor) -> torch.Tensor:
     m, n = gu.shape
+    if _PF.enabled() and _pg_on(m):
+        from atdev_serve import pf_glue
+        return pf_glue.silu_quant(gu)
+    if _PF.enabled() and m > 16:
+        return _PF.unperm_silu(gu)
     g4 = gu.view(m, n // 128, 2, 64).float()
     g, u = g4[:, :, 0].reshape(m, -1), g4[:, :, 1].reshape(m, -1)
     return (g / (1.0 + torch.exp(-g)) * u).to(torch.bfloat16)
@@ -97,6 +108,8 @@ def e6w3_prod(x: torch.Tensor, wq: torch.Tensor, ws: torch.Tensor, res: torch.Te
         _log_once()
         return cn.lin_prod_w3(x.contiguous(), wq, ws, n, k, res.contiguous(), nw)
     h = _w3lin(x, wq, ws, n, k)
+    if _PF.enabled() and m > 16:
+        return _PF.prod_tail(h, res, nw, t)
     xf = h.float() + res.float()
     p = torch.zeros((m, t), dtype=torch.float32, device=x.device)
     p[:, 0] = (xf * xf).sum(1)
@@ -117,7 +130,11 @@ def e6w3_cons(a: torch.Tensor, wq: torch.Tensor, ws: torch.Tensor, p: torch.Tens
         out, r = cn.lin_cons_w3(a.contiguous(), wq, ws, n, k, p.contiguous(), n_norm, eps, silu=silu, want_r=False)
         return out, torch.empty((m,), dtype=torch.float32, device=a.device) if r is None else r
     r = torch.rsqrt(p.sum(1) / n_norm + eps)
-    y = _w3lin((a.float() * r[:, None]).to(torch.bfloat16), wq, ws, n, k)
+    if _PF.enabled() and _pg_on(m):
+        from atdev_serve import pf_glue, w3_dq
+        y = w3_dq.i8_linear(None, wq, ws, n, k, pre=pf_glue.rs_quant(a, r), dt=a.dtype)
+        return (_unperm_silu(y) if silu else y), r
+    y = _w3lin(_PF.row_scale(a, r) if (_PF.enabled() and m > 16) else (a.float() * r[:, None]).to(torch.bfloat16), wq, ws, n, k)
     return (_unperm_silu(y) if silu else y), r
 
 

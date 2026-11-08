@@ -39,7 +39,7 @@ dispatcher, which are valid because compaction restores their layouts after
 every tree step.
 
 Requires: gdn_single_state, --attention-backend TRITON_ATTN,
---no-enable-prefix-caching, DFlash2 drafter, draft_sample_method greedy.
+--no-enable-prefix-caching (or ATDEV_DFT_APC=1 with --mamba-cache-mode align), DFlash2 drafter, draft_sample_method greedy.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ from __future__ import annotations
 import copy
 import functools
 import logging
+import os
 
 import numpy as np
 import torch
@@ -58,6 +59,49 @@ SUPPORTED_VLLM_VERSION = "0.31.0"
 log = logging.getLogger("atdev_serve")
 N_NODES = 16  # tree nodes per verify (root + 15 drafts)
 ACCEPT_GRAPH_RING = 3
+
+
+def apc_enabled() -> bool:
+    """ATDEV_DFT_APC=1: run the tree under prefix caching (``--mamba-cache-mode align``).
+
+    Why APC had to be off: every tree/compaction kernel addresses the GDN state of a request as
+    ``block_tables[g][req, 0:2]`` (column 0 = state slot, column 1 = log slot of A3/single-state).
+    That holds only for ``mamba_cache_mode='none'``, where a request owns ``1 + num_spec``
+    consecutive blocks at columns 0..k. With ``align`` the block table row is indexed by
+    block position (one column per ``block_size`` tokens, cached/shared blocks included) and the
+    running state + spec slots sit at column ``(seq_len - 1) // block_size`` onwards; vLLM hands
+    the GDN layers the re-based view (``MambaSpecDecodeGPUContext.aligned_state_indices``,
+    persistent [G, max_reqs, 1 + k]). gdn_single_state already reads that view
+    (``spec_state_indices_tensor``) but the tree's compaction / post kernels read raw columns 0:2,
+    which under align are the *first* (prefix-cached, possibly shared) blocks of the request, so
+    they would compact the log / conv state into another request's or a cached block.
+    gdn_single_state's own align check is lifted by ATDEV_GDN_SS_ALIGN=1 (gdn_ss_align.py).
+    """
+    return os.environ.get("ATDEV_DFT_APC", "0") == "1"
+
+
+def gdn_state_tables(runner, block_tables, input_batch):
+    """Block tables with each GDN group replaced by its re-based state-index view [max_reqs, 1+k]
+    (same pointer every step: safe for the accept CUDA graph). Other groups unchanged.
+
+    prepare_attn returns before vLLM builds the attention metadata (which is what normally fills
+    the aligned indices), so the view is (re)computed here from the same inputs
+    (``compute_aligned_state_indices(seq_lens, num_reqs)``: one tiny launch, idempotent).
+    Dummy / warm-up runs have no initialised align context (preprocess_state skips them):
+    the raw tables are returned, nothing reads them as state indices there."""
+    ms = runner.model_state
+    ctx = getattr(ms, "_mamba_ctx", None)
+    if ctx is None or not ctx.is_initialized or ctx.aligned_state_indices is None:
+        if not getattr(ms, "_align_mode", True):
+            raise RuntimeError("atdev dflash_tree: ATDEV_DFT_APC=1 needs --mamba-cache-mode align "
+                               "(MRV2 mamba hybrid model state); pass the APC flags")
+        return block_tables
+    ctx.compute_aligned_state_indices(input_batch.seq_lens, input_batch.num_reqs)
+    ids = ms._mamba_group_ids
+    out = list(block_tables)
+    for gi, g in enumerate(ids):
+        out[g] = ctx.aligned_state_indices[gi]
+    return tuple(out)
 
 
 class _State:
@@ -505,6 +549,8 @@ def _begin_step(runner, input_batch, attn_out) -> None:
         _check_backend(runner)
         _wrap_model_state(runner)
     S.block_tables, S.slot_mappings = attn_out
+    if apc_enabled():
+        S.block_tables = gdn_state_tables(runner, S.block_tables, input_batch)
     tree = _decide(runner, input_batch)
     if tree:
         ag = S.ag

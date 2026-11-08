@@ -19,14 +19,19 @@ subfolder (``w3/`` or ``w3``). The released files live in one repo, one subfolde
                                          ``atdev-company/Qwen3.8-27B-atdev-c1:drafter/``
 
 Only the files that are needed are downloaded (``allow_patterns``). Downloads go through
-``huggingface_hub`` (honours HF_HOME, HF_TOKEN, HF_HUB_OFFLINE). Each vLLM process resolves
-independently; after the first download every call is a local cache hit.
+``huggingface_hub`` (honours HF_HOME, HF_TOKEN, HF_HUB_OFFLINE). A complete local cache copy is used without any
+network request; otherwise short Hub timeouts apply. Each vLLM process resolves independently.
 """
 from __future__ import annotations
 
 import functools
 import os
 import re
+
+# A slow or unreachable Hub must not stall start-up: short metadata timeouts, and files that are already in the local cache
+# are used without any network request (the Hub is only asked when the cache has no complete copy).
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "10")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
 
@@ -61,8 +66,11 @@ def is_repo_id(spec: str) -> bool:
 def snapshot_dir(repo: str, rev: str | None, allow_patterns: tuple[str, ...] | None = None) -> str:
     from huggingface_hub import snapshot_download
 
-    return snapshot_download(repo_id=repo, revision=rev,
-                             allow_patterns=list(allow_patterns) if allow_patterns else None)
+    kw = dict(repo_id=repo, revision=rev, allow_patterns=list(allow_patterns) if allow_patterns else None)
+    try:
+        return snapshot_download(local_files_only=True, **kw)  # complete cached copy: no network
+    except Exception:
+        return snapshot_download(**kw)
 
 
 @functools.lru_cache(maxsize=None)
@@ -75,7 +83,10 @@ def resolve_files(spec: str, suffix: str = ".safetensors") -> tuple[str, ...]:
     if path and path.endswith(suffix):
         from huggingface_hub import hf_hub_download
 
-        return (hf_hub_download(repo_id=repo, filename=path, revision=rev),)
+        try:
+            return (hf_hub_download(repo_id=repo, filename=path, revision=rev, local_files_only=True),)  # cached: no network
+        except Exception:
+            return (hf_hub_download(repo_id=repo, filename=path, revision=rev),)
     sub = _folder(path)
     d = os.path.join(snapshot_dir(repo, rev, (f"{sub}*{suffix}",)), sub)
     files = sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(suffix)) if os.path.isdir(d) else []

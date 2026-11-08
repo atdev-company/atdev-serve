@@ -48,6 +48,9 @@ _BUF: dict = {}
 _MOD = None
 _TABLE: dict | None = None
 _SEEN: set = set()
+_I8_MIN_M = int(os.environ.get("ATDEV_W3_I8_MIN_M", "1024")) if os.environ.get("ATDEV_W3_I8", "0") == "1" else 1 << 30
+_PG = os.environ.get("ATDEV_PF_GLUE", "0") == "1"
+_DQ_MIN_M = int(os.environ.get("ATDEV_W3_DQ_MIN_M", "256")) if os.environ.get("ATDEV_W3_DQ", "0") == "1" else 1 << 30
 
 
 def sidecar_files() -> list[str]:
@@ -145,6 +148,22 @@ def w3_linear(x: torch.Tensor, q3: torch.Tensor, ms: torch.Tensor, n: int, k: in
         return out
     if x.stride(-1) != 1 or x.stride(0) % 8:
         x = x.contiguous()
+    if m >= _I8_MIN_M:  # PFX-s14: int8 tensor-core path (ATDEV_W3_I8=1)
+        from atdev_serve import w3_dq
+        if not x.is_contiguous():
+            x = x.contiguous()
+        if _PG:
+            from atdev_serve import pf_glue
+            pre = pf_glue.take(x)
+            if pre is not None:
+                return w3_dq.i8_linear(x, q3, ms, n, k, pre=pre)
+        return w3_dq.i8_linear(x, q3, ms, n, k)
+    if m >= _DQ_MIN_M:  # PFX-s10: opt-in large-M path = W3 -> bf16 scratch dequant + cuBLAS (ATDEV_W3_DQ=1)
+        from atdev_serve import w3_dq
+        if w3_dq.enabled():
+            if not x.is_contiguous():
+                x = x.contiguous()
+            return w3_dq.dq_linear(x, q3, ms, n, k)
     ent = table().get(f"{n},{k}", {}).get(m_bucket(m))
     cfg = list(ent["cfg"]) if ent else [-1, -1, -1, 4, 1, 4]
     key = (n, k, m_bucket(m))
@@ -222,6 +241,11 @@ def _wrap_kernel():
             return
         w_q.data = q3
         layer._atdev_w3 = True
+        if _DQ_MIN_M < (1 << 30) or _I8_MIN_M < (1 << 30):  # allocate the dequant scratch + build the kernel outside any CUDA-graph capture
+            from atdev_serve import w3_dq
+            w3_dq.prealloc(w_q.device, n * k)
+        if _I8_MIN_M < (1 << 30):
+            w3_dq.i8_reserve(w_q.device, n, k)
         _STATE.setdefault("packed", []).append(prefix)
 
     def apply_weights(self, layer, x, bias=None):
