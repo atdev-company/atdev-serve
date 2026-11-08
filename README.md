@@ -102,7 +102,7 @@ What to know before switching:
   (corrupt outputs after a prefix hit). C1 `multiturn` holds 284,569 KV tokens at 131,072 context.
 * **C32 accuracy.** The C32 `multiturn` profile is the Hadamard W4A4 stack (same rotated sidecar as before) with a rotation-aware 4-bit prefill GEMM:
   MMLU-Pro 71.4, KMMLU 67.6, HumanEval+ 89.0, perplexity 7.37, GSM8K-1319 94.39%, long-context 36/36 (stock INT4: 71.5 / 67.1 / 90.2 / 7.30 / 94.31%).
-  IFEval prompt strict is 80.2 (stock 83.4) and is being re-checked. `ATDEV_PF_A4=0` disables the 4-bit prefill GEMM.
+  IFEval prompt strict is 81.4 (mean of 3 runs; stock 83.4), 2.0 points below stock, with a run-to-run spread of up to about 4 points. `ATDEV_PF_A4=0` disables the 4-bit prefill GEMM.
 * **Where the numbers come from.** Speed and the broad accuracy scores were measured on our research runtime; this repository's tree was checked against them
   (C1 outputs identical on 76 of 76 turns, speed within 1%, perplexity and GSM8K-300 reproduced). Details in [docs/MULTITURN.md](docs/MULTITURN.md#where-the-numbers-come-from).
   C32 `multiturn` is a full-stack result: it uses the rotated Hadamard weights.

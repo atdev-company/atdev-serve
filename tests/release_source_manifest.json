@@ -67,9 +67,9 @@
     "loader resolves oneHub file, validates exactQwen800schema andfullcheckpointcoverage; no experimental/fake modes"
   ],
   "source_SHA256": {
-    "serve_c1.sh": "55b7841f1d60ddf2cf2b1dbed4bd76e1625781f0c2c4b8b090c2c5ee97720be2",
+    "serve_c1.sh": "d0f75cd045edae885468c8dbf10e43bc7d1c0a14303dc5b4ff96a5dcbf5dc0eb",
     "serve_c1_accuracy.sh": "36804e47936acfc1b852410bac0794f44793737c2a664d7b633b5c139a380cac",
-    "serve_c32.sh": "3df919dad9fc0d1bb4d373fef106460eb6820918dd3e47c93d8a5e92bd64b46a",
+    "serve_c32.sh": "384062184f8afec3c298266d3f72ea4fe5bb2039eb9f6720e6e0817251241609",
     "docker/Dockerfile": "aeaefad922a04361d0f2b5c04e7d06e026e646fe91bf0ed75225e3d3e5babb3c",
     "docker/entrypoint.sh": "57c0de0b7538108020c49f425291bf559d340565b89e94881d1db40cc95cee1f",
     "docker-compose.yml": "b21b1e8edd6feed312327690fed801d29228b930986a5a8312f018a3e4fc552f",

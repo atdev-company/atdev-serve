@@ -175,7 +175,7 @@ prefix cache on; broad scores use the same harness as [ACCURACY.md](ACCURACY.md)
 | long-context retrieval | 36/36 | 36/36 | 36/36 |
 | MMLU-Pro (1,400) | 71.5 | 69.0 | 71.4 |
 | KMMLU Korean (1,125) | 67.1 | 63.8 | 67.6 |
-| IFEval prompt strict / loose | 83.4 / 87.1 | 81.3 / 83.7 | 80.2 / 83.9 |
+| IFEval prompt strict / loose | 83.4 / 87.1 | 81.3 / 83.7 | 81.4 / 84.6 (mean of 3 runs) |
 | HumanEval / HumanEval+ | 95.1 / 90.2 | 95.1 / 90.2 | 94.5 / 89.0 |
 | MBPP / MBPP+ | 91.5 / 76.7 | 88.1 / 75.4 | 89.4 / 75.9 |
 | WikiText-2 perplexity | 7.299 | 8.282 | 7.365 |
@@ -186,8 +186,8 @@ prefix cache on; broad scores use the same harness as [ACCURACY.md](ACCURACY.md)
 * **C32** is in the accuracy class of the Hadamard W4A4 launch (README: MMLU-Pro 72.79, KMMLU 65.07): the weights are the
   same rotated sidecar. The 4-bit prefill GEMM works on the rotated activations (rotation fused with the activation
   quantization, activation clip 0.9, layer 0 kept on 8-bit activations). An earlier bundle without the rotation lost
-  perplexity (7.96) and 2-4 points on MMLU-Pro, KMMLU and HumanEval+. IFEval prompt strict (80.2) is 3 points under stock
-  INT4 (83.4), still being re-checked. `ATDEV_PF_A4=0` sends prefill through the 8-bit path instead (slower; not
+  perplexity (7.96) and 2-4 points on MMLU-Pro, KMMLU and HumanEval+. IFEval prompt strict is 81.4 (mean of 3 runs: 80.2 / 82.3 /
+  81.7; loose 84.6), 2.0 points under stock INT4 (83.4); the run-to-run spread is up to about 4 points. `ATDEV_PF_A4=0` sends prefill through the 8-bit path instead (slower; not
   re-measured on the rotated bundle).
 * Answer text under prefix caching is not byte-identical to the cache-off text (prefill is split at cache-block edges,
   which changes floating-point rounding); in-trace GSM8K-300 through the cached path stays within noise of the cache-off result (C32).

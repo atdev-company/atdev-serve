@@ -57,7 +57,6 @@ if [[ "$PROFILE" == single ]]; then
   echo 'atdev profile: c32-hadamard-w4a4 (built-in MTP), single' >&2
 else
   # ---- multi-turn bundle: the Hadamard W4A4 stack above + prefix caching + chunked-prefill kernels + rotation-aware 4-bit prefill ----
-  # (frozen bundle: results/C32MT/best_env.txt + results/A4ACC arm A)
   export ATDEV_A4_REAL=had3
   export ATDEV_A4_HADW=${C32_HADAMARD:-${HADW:-atdev-company/Qwen3.8-27B-atdev-c32:hadamard/qwen38_27b_hadamard_gptq_d10.safetensors}}
   export ATDEV_GDN_SRC=$PKG/csrc/gdn_var/gdn_ss15h.cu  # CUDA GDN verify kernel with the folded W4A4 out_proj quantization (+ meta fast path)
@@ -76,7 +75,7 @@ else
   export ATDEV_PF_FI=1                                 # FlashInfer fa2 paged attention for the prefill rows of mixed steps
   export ATDEV_PF_MP=1                                 # tuned Marlin launch configs for prefill M > 128
   export ATDEV_TOK_CACHE=1                             # frontend: per-segment tokenization cache for growing chat histories
-  # 4-bit prefill GEMM on the Hadamard-rotated weights (A4ACC arm A): rotation fused with the activation quantization,
+  # 4-bit prefill GEMM on the Hadamard-rotated weights (the selected multi-turn bundle): rotation fused with the activation quantization,
   # s4 fragments emitted directly, activation clip 0.9, layer 0 kept on W4A8. ATDEV_PF_A4=0: prefill through the int8 path (slower).
   export ATDEV_PF_A4=${ATDEV_PF_A4:-1} ATDEV_PF_A4_RQV=${ATDEV_PF_A4_RQV:-1}
   export ATDEV_A4ACC_FUSE=1 ATDEV_A4ACC_S4=1 ATDEV_A4ACC_CLIP=0.9

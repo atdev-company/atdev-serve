@@ -78,7 +78,7 @@ export ATDEV_VSPLIT_FBITS=8                            # verify head: int8 rows 
 export ATDEV_VSPLIT_STREAMS=1                          # verify head: tail GEMM on a side stream, overlapped with the frequent-row GEMM
 
 if [[ "$PROFILE" == multiturn ]]; then
-  # ---- multi-turn: prefix caching for the tree stack + chunked-prefill kernels (frozen bundle, results/C1FINAL) ----
+  # ---- multi-turn: prefix caching for the tree stack + chunked-prefill kernels ----
   export VLLM_USE_V2_MODEL_RUNNER=${VLLM_USE_V2_MODEL_RUNNER:-1}
   export ATDEV_DFT_APC=1                               # tree verification under prefix caching (needs --mamba-cache-mode align)
   export ATDEV_PF_FUSE=1                               # Triton kernels for the prefill-side epilogues of the W3 GEMMs
