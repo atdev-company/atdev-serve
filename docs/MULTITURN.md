@@ -51,7 +51,7 @@ A100 of the same machine. The sum of time-to-first-token over the trace is 84.3 
 130.4 s for stock; the prefix-cache hit rate is 0.95 for both, so the gain comes from faster prefill of what
 is new and faster decoding, not from caching more.
 
-KV cache: the frozen bundle holds 284,569 tokens at `--max-model-len 131072` (2.2 full-length requests); the
+KV cache: the measured launch holds 284,160 tokens at `--max-model-len 131072` (2.2 full-length requests); the
 dequantized prefill weights take GPU memory that the previous multi-turn build left to the cache.
 
 ## C32: 32 concurrent sessions
@@ -216,7 +216,7 @@ prefix cache on; broad scores use the same harness as [ACCURACY.md](ACCURACY.md)
   outputs are corrupted after a prefix-cache hit (stock vLLM's int8 KV shows the same), and capacity does not bind for
   these traces.
 * **Memory.** C1 `multiturn` keeps a dequantized int8 copy of the W3 weights for large prefill chunks, which leaves
-  284,569 KV tokens at 131,072 context. Longer contexts than 131,072 were not tested with this profile (the 262,144-token
+  284,160 KV tokens at 131,072 context. Longer contexts than 131,072 were not tested with this profile (the 262,144-token
   record in the README is for the single-turn launches).
 * **Very long cold prompts.** Reading one fresh 64k-100k prompt is not faster than stock vLLM's default (measured on the
   earlier multi-turn build before the FlashAttention/int8 prefill kernels: 100k tokens, 79.7 s to first token against

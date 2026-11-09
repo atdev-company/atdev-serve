@@ -31,7 +31,7 @@ Measured facts to base the choice on (all on one A100 80GB, vLLM 0.31.0, greedy,
 * c1s: 408.9 tok/s mean decode per request, 2.08x the best stock vLLM (196.5).
 * c32m: 32 concurrent 7-turn sessions reach 386.3 / 857.3 / 1,096.1 aggregate output tok/s against 245.5 / 543.5 / 719.2 for the fastest stock setting (1.57x / 1.58x / 1.52x; wall time 73.4 / 117.6 / 199.1 s against 115.1 / 184.3 / 314.0 s).
 * c32s: 2,688.1 aggregate output tok/s, 1.53x the best stock vLLM (single measured run).
-* KV cache: c1m holds about 284,600 tokens at its 131,072-token window; c1s about 542,000 (indicative); c32m about 514,800 at 16,384.
+* KV cache: measured in the server log at start-up: c1m 284,160 tokens at its 131,072-token window; c1s 172,398 at 8,192 (c1s accuracy 166,803); c32m 514,755 at 16,384; c32s 423,424 at 8,192. c1m has the largest cache of the two single-user setups.
 
 ## The four setups
 
@@ -42,13 +42,13 @@ Each setup is a separate, self-contained recipe: pick **one**, set `STACK` to it
 * **Fits:** an agent loop or chat where each request resends the conversation so far. Long context is the point: 131,072-token window (the measured trace reaches 111k tokens).
 * **What you get:** prefix caching (cache hit rate 0.95 on the trace), faster prefill kernels, a start-up warmup that logs `atdev warmup: done`. Single requests decode at 394.4 tok/s.
 * **Downloads:** INT4 target (19 GB) + W3 overlay (12.5 GB) + drafter (1.35 GB) from `atdev-company/Qwen3.8-27B-atdev-c1`.
-* **Caveats to tell the user:** 3.6-3.7% slower than c1s on independent short prompts; the KV cache is smaller than c1s; the prefix cache only helps when the conversation prefix is unchanged; greedy decoding only; the c1 W3 overlay carries a measured 2.5-3.3 point gap on MMLU-Pro and Korean knowledge against stock INT4.
+* **Caveats to tell the user:** 3.6-3.7% slower than c1s on independent short prompts; at c=1 its context window is 131,072 against 8,192 for c1s; the prefix cache only helps when the conversation prefix is unchanged; greedy decoding only; the c1 W3 overlay carries a measured 2.5-3.3 point gap on MMLU-Pro and Korean knowledge against stock INT4.
 * **Optional:** `ATDEV_EOR_CKPT=1` also reuses the server's own previous reply (neutral at c=1 on the measured traces).
 
 ### Setup c1s: one user, single-turn (`STACK=c1s`)
 
 * **Fits:** independent requests with short prompts, where nothing repeats; or when you need the longest window: `--max-model-len 262144` was tested (261,583 input tokens).
-* **What you get:** 408.9 tok/s decode per request (2.08x best stock vLLM), the largest KV cache, no prefix caching, 8,192-token default window.
+* **What you get:** 408.9 tok/s decode per request (2.08x best stock vLLM), no prefix caching, 8,192-token default window.
 * **Downloads:** same as c1m. `c1s accuracy` (`STACK=c1s-accuracy`) skips the W3 overlay.
 
 ### Setup c32m: many users, multi-turn (`STACK=c32m`)
@@ -82,7 +82,7 @@ check both `torch.version.cuda` and `nvcc --version`.
   `CUDA_VISIBLE_DEVICES=<index>` for every command and do not change it afterwards. A busy GPU means
   more than 1 GB already used or any compute process listed by `nvidia-smi`.
 * **R3. Long first start.** The first server start compiles CUDA kernels and downloads model files
-  (about 32 GiB for c1m / c1s; c1s accuracy skips the 12.5 GB W3 overlay; c32m / c32s need the INT4 base plus a roughly 12.5 GB Hadamard sidecar; profiles are defined in the decision guide). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
+  (about 32 GiB for c1m / c1s; c1s accuracy skips the 12.5 GB W3 overlay; c32m / c32s need the INT4 base plus a roughly 12.5 GB Hadamard sidecar; profiles are defined in the decision guide). The install tests measured 17-19 minutes for a first start on a clean machine (a 34-35 GB download included; install itself about 8 minutes); allow up to 2 hours on a slow network. Do not interrupt it: interrupting can leave stale build locks (see F6).
 * **R4. Paths.** Work inside the repository root (`$REPO`). Use absolute paths in your own scripts.
 * **R5. Secrets.** Reuse an existing authorized Hub login or user-provided `HF_TOKEN` first. If access is still needed, ask the user to provide it or run
   `huggingface-cli login`. Never print it or write it to files in the repository.
@@ -93,10 +93,10 @@ check both `torch.version.cuda` and `nvcc --version`.
 export REPO="${REPO:-$HOME/atdev-serve}"
 git clone https://github.com/atdev-company/atdev-serve "$REPO"   # skip if already present
 cd "$REPO"
-test -f pyproject.toml && test -f serve_c1.sh && echo REPO_OK
+test -f pyproject.toml && test -f serve.sh && echo REPO_OK
 ```
 
-Expected: `REPO_OK`.
+Expected: `REPO_OK`. If the checkout is not in `$HOME/atdev-serve`, set `REPO` to its real location before every command in this guide (every phase uses `$REPO`).
 
 For an existing installation, preserve local changes, update the checkout with `git pull --ff-only`,
 then refresh the installed plugin explicitly (the package version may still be `0.1.0`):
@@ -119,13 +119,14 @@ GPUs: judge P2 / P4 only by the row for the chosen index.
 | P1 | `uname -sm` | `Linux x86_64` | stop: unsupported platform |
 | P2 | `nvidia-smi --query-gpu=index,name,memory.total,memory.used,driver_version --format=csv,noheader` | at least one row with `A100` and `81920 MiB` (or `80` GB) | no A100 80GB: stop and tell the user this release supports only the A100 80GB (sm_80) |
 | P3 | same output, driver column | driver major version >= 580 | ask the user to upgrade the NVIDIA driver (R1) |
-| P4 | `nvidia-smi -i <idx> --query-compute-apps=pid,used_memory --format=csv,noheader` (also print `nvidia-smi --query-gpu=index,uuid,memory.used --format=csv` for the index/UUID mapping) | empty output (no compute process) and < 1 GB used on that GPU | pick another free A100 or ask the user (R1, R2) |
+| P4 | `nvidia-smi -i <idx> --query-compute-apps=pid,used_memory --format=csv,noheader` (also print `nvidia-smi --query-gpu=index,uuid,memory.used --format=csv` for the index/UUID mapping) | empty output (no compute process) and < 1 GB used on that GPU. Treat memory used >= 1 GB as "in use" even when the compute-apps list is empty (another container or user can hold memory without being listed) | pick another free A100 or ask the user (R1, R2). If the GPU is only partly in use and the user agrees to share it, lower `--gpu-memory-utilization` (append e.g. `--gpu-memory-utilization 0.60` to the launch command; the default is 0.90 / 0.93) so that the value times 80 GB fits in the free memory with about 8 GiB margin; very small values leave too little KV cache and the server will refuse to start |
 | P5 | `df -Pk "$REPO" "${HF_HOME:-$HOME/.cache/huggingface}" 2>/dev/null` | >= 80 GB free where the venv and the HF cache live | ask the user for a disk with space and relocate the caches there (optional, set before install/start; atdev-env.sh has commented lines): `HF_HOME`, `TORCH_EXTENSIONS_DIR`, `VLLM_CACHE_ROOT`, `TRITON_CACHE_DIR`, `XDG_CACHE_HOME` (FlashInfer uses it), `PIP_CACHE_DIR` |
-| P6 | `curl -s -o /dev/null -w '%{http_code}' https://huggingface.co/api/models/RedHatAI/Qwen3.8-27B-INT4` | `200` | offline: see F9 |
+| P6 | `curl -s -o /dev/null -w '%{http_code}' https://huggingface.co/api/models/RedHatAI/Qwen3.8-27B-INT4` | `200` | `429` can be transient (rate limit): wait a minute and retry. Otherwise offline: see F9 |
 | P7 | `docker info >/dev/null 2>&1 && docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 nvidia-smi -L` | prints the GPUs | Docker with GPU is not usable: take the venv path |
 | P8 | `command -v python3.12 \|\| command -v uv` | a path is printed | venv path needs Python 3.12 or uv: ask to install (R1) or use Docker |
 | P9 | `for d in "$CUDA_HOME" /usr/local/cuda-13.0 /usr/local/cuda; do [ -x "$d/bin/nvcc" ] && "$d/bin/nvcc" --version \| grep -q 'release 13.0' && echo "CUDA_DIR=$d" && break; done` | a `CUDA_DIR=` line (that directory has nvcc `release 13.0`) | venv path needs the CUDA 13.0 toolkit: ask to install it (R1), or use Docker, or try F2 |
 | P10 | `g++ --version \| head -1` | prints a version | `sudo apt install build-essential` (R1) |
+| P11 | `PORT="${PORT:-8100}"; (ss -ltn "sport = :$PORT" 2>/dev/null \| grep -q LISTEN) && echo PORT_BUSY \|\| echo PORT_FREE` | `PORT_FREE` | choose another port: `export PORT=<free port>` for the Python route (`ATDEV_PORT` for Docker) and use it in every URL below |
 
 **Choose the install path.** If P7 passes, use **Phase 2A (Docker)**. If not, use **Phase 2B
 (venv)**, which requires P8, P9 and P10 to pass.
@@ -143,7 +144,8 @@ The up-to-14.2x headline belongs only to c1s; the multi-turn speedups (up to 3.4
 
 ```bash
 cd "$REPO"
-export ATDEV_GPU=<gpu index from P4> ATDEV_PORT=8100
+export ATDEV_GPU=<gpu index from P4> ATDEV_PORT=8100   # ATDEV_PORT is the host port (Docker's name for PORT)
+export PORT=$ATDEV_PORT                                 # the check URLs below use PORT
 docker compose --profile "$COMPOSE_PROFILE" build
 docker compose --profile "$COMPOSE_PROFILE" run --rm "atdev-$COMPOSE_PROFILE" check
 ```
@@ -191,9 +193,12 @@ nvcc --version | grep -q 'release 13.0' && echo NVCC_OK                 # -> NVC
 
 ## Phase 3: start the server (venv path)
 
+`serve.sh` is the entry point: `./serve.sh c1m | c1s | c32m | c32s` (c1s accuracy has its own script). Check the port first (P11), and run the commands below from `$REPO`.
+
 ```bash
 source "$REPO/atdev-env.sh"
 export CUDA_VISIBLE_DEVICES=<gpu index from P4>
+export PORT="${PORT:-8100}"        # the launch scripts read PORT; the check URLs below use it too
 LOG="$REPO/server_$STACK.log"
 case "$STACK" in
   c1m|c1s|c32m|c32s) START_SCRIPT=serve.sh; START_ARG=$STACK ;;     # ./serve.sh <name>
@@ -206,11 +211,11 @@ nohup setsid bash -c 'echo $$ > "$1"; exec "./$2" $3' _ "$REPO/server_$STACK.pid
 
 ## Phase 4: wait for readiness
 
-Poll every 30 s for up to 2 hours:
+Poll every 30 s (the install tests took 17-19 minutes from a clean machine, including a 34-35 GB model download and about 8 minutes of install; allow longer on a slow link):
 
 ```bash
 for i in $(seq 1 240); do
-  curl -sf http://127.0.0.1:8100/health >/dev/null && { echo READY; break; }
+  curl -sf http://127.0.0.1:${PORT:-8100}/health >/dev/null && { echo READY; break; }
   grep -qE 'Traceback|Error:|server exited' "$LOG" && { echo FAILED; break; }
   kill -0 "$(cat "$REPO/server_$STACK.pid")" 2>/dev/null || { echo FAILED; break; }
   sleep 30
@@ -226,7 +231,7 @@ While waiting, these log lines are expected, in roughly this order:
 
 1. `atdev-serve: enabled optimizations: [...]` (the plugin is active). If it is missing after the
    model starts loading, go to F4.
-2. About 5 minutes with a quiet log while the kernels compile (first start only): `nvcc` / `cicc`
+2. A few minutes with a quiet log while the kernels compile (first start only): `nvcc` / `cicc`
    processes are using CPU. This is normal (R3).
 3. Model download (first start only), then weight loading
 4. `torch.compile` and FlashInfer `Building JIT module sampling`
@@ -254,11 +259,14 @@ Both profiles passed a single-A100-80GB test with **261,583 input + 21 output = 
 
 ## Phase 5: verify the server
 
-```bash
-curl -s http://127.0.0.1:8100/v1/models
-# expected: JSON with "id": "m"
+`serve.sh` (Phase 3) is the entry point that started this server; every URL below uses `${PORT:-8100}`.
 
-curl -s http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/json' -d '{
+```bash
+curl -s http://127.0.0.1:${PORT:-8100}/v1/models
+# expected: JSON with "id": "m" and this profile's context window in "max_model_len"
+# c1m 131072, c1s 8192, c1s accuracy 8192, c32m 16384, c32s 8192 (confirms the server you reached is your own launch, not another one on the port)
+
+curl -s http://127.0.0.1:${PORT:-8100}/v1/chat/completions -H 'Content-Type: application/json' -d '{
   "model":"m","messages":[{"role":"user","content":"What is 17*23? Answer with the number only."}],
   "temperature":0,"max_tokens":512,"chat_template_kwargs":{"enable_thinking":false}}'
 # expected: a completion whose content contains 391
@@ -271,14 +279,27 @@ to **temperature 0** with `--override-generation-config '{"temperature":0}'`. Re
 precedence. The examples still pass `"temperature":0` explicitly for reproducible comparisons;
 `temperature > 0` has not been validated for the published speed or quality.
 
+### Checking prefix-cache hits (m profiles)
+
+Wait for `atdev warmup: done` in the log before measuring anything. `usage.prompt_tokens_details` is `null` by default: the launchers do not pass `--enable-prompt-tokens-details`. Appending that flag to the launch command (for example `./serve.sh c1m --enable-prompt-tokens-details`) fills `usage.prompt_tokens_details.cached_tokens`; we confirmed this on c1m, where a repeated document reported 8,160 of 8,268 prompt tokens cached, and on c1s, which reports 0. Without the flag, read the server counter instead:
+
+```bash
+m() { curl -s "http://127.0.0.1:${PORT:-8100}/metrics" | awk '/^vllm:prefix_cache_hits_total/ {print $2}'; }
+before=$(m)
+# ... send the second request of a conversation (the same system prompt and history, a new last user message) ...
+after=$(m); echo "cache hit tokens: $((${after%.*} - ${before%.*}))"
+```
+
+A positive delta means the prefix was reused. The s profiles have no prefix caching, so the counter stays at 0.
+
 Optional speed check (send it twice; the first requests after a start are slower):
 
 ```bash
 python3 - <<'PY'
-import json, time, urllib.request
+import json, os, time, urllib.request
 body = {"model": "m", "temperature": 0, "max_tokens": 1024,
         "messages": [{"role": "user", "content": "Write a Python function that merges two sorted lists, with tests."}]}
-req = urllib.request.Request("http://127.0.0.1:8100/v1/chat/completions", json.dumps(body).encode(),
+req = urllib.request.Request(f"http://127.0.0.1:{os.environ.get('PORT', '8100')}/v1/chat/completions", json.dumps(body).encode(),
                              {"Content-Type": "application/json"})
 t = time.time(); r = json.load(urllib.request.urlopen(req)); dt = time.time() - t
 n = r["usage"]["completion_tokens"]; print(f"{n} tokens in {dt:.1f} s = {n / dt:.0f} tok/s")
@@ -315,7 +336,7 @@ to the user.
 ## Phase 7: report to the user
 
 Report: the install path (Docker or venv), the exact profile (`c1m` / `c1s` / `c1s-accuracy` / `c32m` / `c32s`), the GPU index, the endpoint URL
-(`http://<host>:8100/v1`, model name `m`), the time the first start took, the result of the Phase 5
+(`http://<host>:${PORT:-8100}/v1`, model name `m`), the time the first start took, the result of the Phase 5
 math check, and the speed check result if it was run. Give the user the commands to stop and
 restart the server (Phase 8). Include the active target precision, sidecar/drafter sources, and whether the observed speed uses single-request decode or aggregate throughput. Report any errors or accuracy differences; do not label a short math answer as full accuracy validation. Link the measured profile table in `docs/ACCURACY.md`.
 
@@ -324,6 +345,7 @@ restart the server (Phase 8). Include the active target precision, sidecar/draft
 ```bash
 # venv
 kill -TERM -- -"$(cat "$REPO/server_$STACK.pid")"      # stops the process group started in Phase 3
+sleep 30; kill -0 "$(cat "$REPO/server_$STACK.pid")" 2>/dev/null && kill -TERM -- -"$(cat "$REPO/server_$STACK.pid")"   # still up after 30 s: send TERM again
 # Docker
 docker compose --profile "$COMPOSE_PROFILE" down
 ```

@@ -71,7 +71,7 @@ git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
 docker compose --profile c1m up --build  # or c1s, c32m, c32s (c1s accuracy: c1s-accuracy; the old names c1, c1-single, c1-accuracy, c32, c32-single still work)
 ```
 
-The first start compiles kernels and downloads the models (12-16 minutes on our test machine); later starts reuse the cache. Then send a request (the launchers default to `temperature: 0`, greedy):
+The first start compiles kernels and downloads the models (17-19 minutes on a clean machine in our install tests, including a 34-35 GB model download and about 8 minutes of install); later starts reuse the cache. Then send a request (the launchers default to `temperature: 0`, greedy):
 
 ```bash
 curl http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/json' \
@@ -268,13 +268,13 @@ Only greedy decoding is qualified; sampling at higher temperatures is not valida
 | Target workload | one client, conversations that grow (agents, long chat, document Q&A) | one client, independent short requests | 32 clients, growing conversations | 32 clients, independent requests |
 | Prefix caching | yes (align mode, state re-basing) | no | yes | no |
 | Context window (default) | 131,072 | 8,192 (262,144 tested with `--max-model-len`) | 16,384 | 8,192 (262,144 tested) |
-| KV cache at that window | about 284,600 tokens (2.2 full-length requests) | about 542,000 tokens (4.1 full-length requests; measured on the multi-turn build before the int8 prefill weights, indicative) | about 514,800 tokens (31 requests of 16,384; frozen bundle) | not published |
+| KV cache at that window | 284,160 tokens (2.2 full-length requests) | 172,398 tokens (21 requests of 8,192; 166,803 for c1s accuracy) | 514,755 tokens (31 requests of 16,384) | 423,424 tokens (51 requests of 8,192) |
 | GPU memory setting | `--gpu-memory-utilization 0.90` | 0.90 | 0.90 (0.93 with the optional checkpoint) | 0.90 |
 | Weights used | INT4 target + W3 overlay (12.5 GB) + d16 drafter (1.35 GB) | same (c1s accuracy: INT4 + drafter only) | INT4 target + Hadamard sidecar (about 12.5 GB), built-in MTP | same as c32m |
 | Speculation | DFlash2 block 16, 16-node token tree | same | built-in MTP k=3, confidence-scheduled verify | same |
 | Single-request / aggregate speed (96 prompts) | 394.4 tok/s per request | 408.9 tok/s per request | n/a | 2,688.1 aggregate tok/s |
 | Multi-turn speed vs best stock vLLM (output tok/s) | 2.37x / 3.07x / 3.40x (`max_tokens` 128 / 512 / 2048) | not designed for it | 1.57x / 1.58x / 1.52x | not designed for it |
-| Start-up | kernel builds on first start (12-16 min on our machine), then about 2 min; JIT warmup runs in the background | same without warmup | same as c1m, 32-way warmup | same as c1s |
+| Start-up | first start 17-19 min on a clean machine (34-35 GB download, install about 8 min), then about 2 min; JIT warmup runs in the background | same without warmup | same as c1m, 32-way warmup | same as c1s |
 | Optional end-of-reply checkpoint | yes, neutral at c=1 | n/a | yes (3% more memory) | n/a |
 
 Rule of thumb from the measurements: if a prefix repeats, the `m` profile wins by a wide margin (c1m is 2.4x-3.4x faster on long conversations). If every request is independent and short, `s` is 3.7% faster (c1: 409.5 vs 394.4 mean decode tok/s)
@@ -292,7 +292,7 @@ Pass `--max-model-len 262144` to the launcher (`./serve.sh c1s --max-model-len 2
 * **Greedy decoding only.** Sampling at temperature > 0 is not validated.
 * **The `m` profiles are full-stack results.** No engine-only multi-turn measurement exists; outputs are not byte-identical to stock vLLM or to the `s` profiles (3-bit weights, 4-bit activations, FlashAttention-2 / FlashInfer rounding, prefix-cache block edges).
 * **bf16 KV cache.** The fast paths keep the KV cache in bf16; an int8 KV cache was tried and removed (it corrupted output after prefix-cache hits).
-* **c1m memory.** The dequantized prefill weights leave about 284,600 KV tokens at 131,072 context. Windows longer than 131,072 were not tested with `m` profiles (the 262,144-token record is for `c1s` and `c32s`).
+* **c1m memory.** The dequantized prefill weights leave 284,160 KV tokens at 131,072 context. Windows longer than 131,072 were not tested with `m` profiles (the 262,144-token record is for `c1s` and `c32s`).
 * **Cold, very long prompts.** One fresh 64k-100k prompt is not faster than stock vLLM's default on the earlier multi-turn build (100k tokens: 79.7 s to first token against 46.1 s); not re-measured on the final build. The gains come from repeated history and faster decoding.
 * **Traces are synthetic.** Workloads with fewer repeated prefixes gain less. The trace files are not part of this repository.
 * **c32m accuracy.** IFEval prompt strict is 2.0 points below stock (run-to-run spread up to about 4 points); c1 profiles keep the 3-bit overlay's gap (see above).
@@ -300,11 +300,11 @@ Pass `--max-model-len 262144` to the launcher (`./serve.sh c1s --max-model-len 2
 
 ## FAQ and troubleshooting
 
-* **The first start takes a long time.** It JIT-compiles the CUDA kernels (12-16 minutes on our test machine) and downloads the models. Later starts take about 2 minutes. Do not interrupt a build: a server killed mid-build can leave a stale
+* **The first start takes a long time.** It JIT-compiles the CUDA kernels (17-19 minutes on a clean machine in our install tests, including a 34-35 GB model download and about 8 minutes of install) and downloads the models. Later starts take about 2 minutes. Do not interrupt a build: a server killed mid-build can leave a stale
   `lock` file in the kernel cache directory (`TORCH_EXTENSIONS_DIR`, default `~/.cache/torch_extensions`) and the next start then waits forever with an idle GPU. Remove it with `find "${TORCH_EXTENSIONS_DIR:-$HOME/.cache/torch_extensions}" -name lock -delete` when no build is running.
 * **My c1m / c32m run is not faster than stock.** Check that the conversation prefix is byte-identical from turn to turn (same system prompt, same earlier messages, new message last) and that the server started with the multi-turn profile (the log says `multiturn`).
   The metrics endpoint reports prefix-cache hits; independent prompts (no repeated prefix) gain nothing from caching, use `s` for those.
-* **Which profile for one user?** `c1m` if the conversation grows or the prompt is long, `c1s` for independent short prompts (3.7% faster per request, larger KV cache).
+* **Which profile for one user?** `c1m` if the conversation grows or the prompt is long, `c1s` for independent short prompts (3.7% faster per request).
 * **The first request is slow.** `c1m` and `c32m` run a warmup in the background after the server is ready; wait for the `atdev warmup: done` log line, or set `NO_WARMUP=1` to skip it.
 * **Can I serve sampled outputs?** Only greedy decoding is qualified. Sampling works through the OpenAI API but is not validated.
 * **Other GPUs, several GPUs?** Only a single A100 80GB is supported by this release.

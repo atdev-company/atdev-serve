@@ -33,7 +33,7 @@ Four profiles; the name is **c** (concurrent clients it is tuned for) + **m** (m
 | if you... | run | what you get |
 |---|---|---|
 | use a coding agent, a long chat or document Q&A with one conversation that keeps growing | **c1m** (`./serve.sh c1m`) | prefix caching and a 131,072-token window: 2.4x-3.4x the output tok/s of the best stock vLLM on a 111k-token agent trace; about 394 tokens/s for a single request ([MULTITURN.md](MULTITURN.md)) |
-| make one-shot calls with short, unrelated prompts | **c1s** (`./serve.sh c1s`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings), no prefix caching, 8,192-token window, the largest KV cache |
+| make one-shot calls with short, unrelated prompts | **c1s** (`./serve.sh c1s`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings), no prefix caching, 8,192-token window |
 | prioritize measured broad accuracy over the maximum c1s speed | **c1s accuracy** (`./serve_c1_accuracy.sh`) | W3 disabled, same drafter; 357.17 tok/s; see [all scores](ACCURACY.md) |
 | serve a team or a fleet of agents whose conversations grow | **c32m** (`./serve.sh c32m`) | Hadamard W4A4 with prefix caching: 1.52x-1.58x the output tok/s of the best stock vLLM on 32-session traces ([MULTITURN.md](MULTITURN.md)) |
 | run batch jobs or an API of independent requests | **c32s** (`./serve.sh c32s`) | Hadamard W4A4 only: 2,688.13 aggregate tokens/s in one run at c=32 (vs historical 1,757.1 best stock vLLM) |
@@ -68,7 +68,7 @@ docker compose --profile c1m up --build           # c1m: 1 client, multi-turn
 
 * The **first** run builds the image (it downloads about 10 GB of Python packages), downloads the
   models into a Docker volume, and compiles the CUDA kernels. Expect it to take
-  10 minutes or more. Later runs start in a few minutes.
+  17-19 minutes on a clean machine in our install tests (34-35 GB download, about 8 minutes of install). Later runs start in a few minutes.
 * The server is ready when the log shows `Application startup complete`.
 * To use a GPU other than 0: `ATDEV_GPU=1 docker compose --profile c1m up`. To use another port:
   `ATDEV_PORT=9000 ...`.
@@ -132,7 +132,7 @@ source atdev-env.sh
 ```
 
 * The first start compiles the CUDA kernels (this needs `nvcc`) and downloads the models. Expect it to
-  take 10 minutes or more. Wait for `Application startup complete`.
+  take 17-19 minutes on a clean machine (our install tests). Wait for `Application startup complete`.
 * The log should contain `atdev-serve: enabled optimizations: [...]`. If it does not, the plugin is
   not active (see [Troubleshooting](#6-troubleshooting)).
 * Change the port or the model name the API reports with `PORT=9000 SERVED_NAME=qwen ./serve.sh c1m`.

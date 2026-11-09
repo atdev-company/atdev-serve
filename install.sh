@@ -239,7 +239,7 @@ echo "== done"
 cat <<EOF
 Next:
   source atdev-env.sh
-  ./serve_c1.sh      # single-user stack  (or ./serve_c32.sh for 32 concurrent requests)
-  # the first start compiles the CUDA kernels and downloads the models; wait for "Application startup complete"
-  curl http://127.0.0.1:8100/v1/models
+  ./serve.sh c1m | c1s | c32m | c32s     # pick one profile (see README: Profile comparison)
+  # the first start compiles the CUDA kernels and downloads the models (17-19 minutes on a clean machine in our install tests); wait for "Application startup complete"
+  curl http://127.0.0.1:${PORT:-8100}/v1/models
 EOF
