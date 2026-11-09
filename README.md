@@ -111,22 +111,24 @@ Verify that the server answers a chat request, then tell me the endpoint URL and
 
 ## Results at a glance
 
-Qwen3.8-27B on 1x A100 80GB, vLLM 0.31.0, greedy decoding, thinking off. Multi-turn charts show the wall time of a scripted conversation (lower is better, `max_tokens` 2048,
+Qwen3.8-27B on 1x A100 80GB, vLLM 0.31.0, greedy decoding, thinking off. Multi-turn charts show output tokens per second over the whole scripted conversation, prefill included (higher is better, `max_tokens` 2048,
 the longest output cap, where the gain is largest); single-turn charts show the 96-prompt benchmark (coding, agentic, general, math; 39 in Korean; up to 1,024 output tokens).
 
 ### c1m: 1 client, multi-turn
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/speed_c1m-dark.svg">
-  <img alt="c1m: whole-trace wall time at max_tokens 2048: bf16 stock vLLM 2716.3 s, fastest stock INT4 1136.3 s, atdev-serve c1m 301.2 s (3.77x faster)" src="docs/img/speed_c1m.svg">
+  <img alt="c1m: output tokens per second over the whole trace at max_tokens 2048: bf16 stock vLLM 24.1, fastest stock INT4 58.4, atdev-serve c1m 198.6 (3.40x the fastest stock by tok/s)" src="docs/img/speed_c1m.svg">
 </picture>
 
 ### c32m: 32 clients, multi-turn
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/speed_c32m-dark.svg">
-  <img alt="c32m: whole-trace wall time at max_tokens 2048: bf16 stock vLLM 771.8 s, fastest stock INT4 314.0 s, atdev-serve c32m 199.1 s (1.58x faster)" src="docs/img/speed_c32m.svg">
+  <img alt="c32m: aggregate output tokens per second over the whole trace at max_tokens 2048: bf16 stock vLLM 293.5, fastest stock INT4 719.2, atdev-serve c32m 1096.1 (1.52x the fastest stock by tok/s)" src="docs/img/speed_c32m.svg">
 </picture>
+
+The multi-turn charts show output tokens per second over the whole run (prefill included), so their multiples are tok/s ratios: c1m 3.40x vs the fastest stock setting and 8.2x vs bf16; c32m 1.52x and 3.7x. The multiples quoted in the text and tables (3.77x / 9.02x and 1.58x / 3.88x) are based on total completion time and differ slightly because the arms emitted slightly different numbers of tokens.
 
 The c32m headline is the final c32m bundle's 3-repetition run on trace v5-c32 (median 199.1 s; its three repetitions were 193.1, 199.1 and 199.5 s, mean 197.2 s, which is 1.59x). We quote the median everywhere in this repository so every table uses one rule.
 The fastest stock setting at `max_tokens` 2048 is INT4 with int8 activations, MTP k=3 and `TRITON_ATTN` (median 314.0 s).
