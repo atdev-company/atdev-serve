@@ -52,7 +52,7 @@ The last letter is the workload: **`m` = multi-turn** (conversations that grow; 
 
 `./serve.sh <name> [extra vllm serve args]` only chooses the existing launcher and its `--profile`; the older commands still work
 (`./serve_c1.sh --profile single|multiturn`, `./serve_c32.sh --profile single|multiturn`, `./serve_c1_accuracy.sh`). A second c1s flavor, **c1s accuracy** (`./serve_c1_accuracy.sh`),
-switches off the 3-bit overlay for better measured accuracy at 357.2 tok/s.
+switches off the 3-bit overlay and runs at 357.2 tok/s; see [Accuracy and validation](#accuracy-and-validation).
 
 **Which one do I pick?**
 
