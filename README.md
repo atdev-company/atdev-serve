@@ -1,8 +1,10 @@
-# atdev-serve: up to 14.2x single-turn, up to 9.0x multi-turn
+# atdev-serve: Qwen3.8-27B up to 14.2x single-turn, up to 9.0x multi-turn
 
 ## Qwen3.8-27B on one A100 80GB: faster agents, faster chat, lower energy per token
 
 > **Easy setup on vLLM.** atdev-serve installs alongside unmodified **vLLM 0.31.0** and serves the familiar OpenAI-compatible API; install it by hand in four lines or hand it to your AI coding agent: see **[Install](#install)**. Requires a supported NVIDIA GPU (the published profiles target an A100 80GB).
+
+**Four profiles, each tuned for its use case.** One user or 32, multi-turn or single-turn: run the build made for your workload with `./serve.sh c1m | c1s | c32m | c32s` ([which one?](#the-four-profiles)).
 
 **Multi-turn and agent workloads (new)**
 
@@ -13,7 +15,6 @@
 - **Long context on one GPU:** c1m serves a 131,072-token window (the trace above reaches 111k tokens) with prefix caching, so each turn prefills only what is new (cache hit rate 0.95).
 - **Less energy per token:** at `max_tokens` 2048 the c1m run used 133 kJ against 405 kJ for stock vLLM (2.22 vs 6.10 J per output token, 0.33x); c32m used 76.5 kJ against 121.4 kJ (0.35 vs 0.54 J/token, 0.63x). NVML, same GPU.
 - **Output-identical consolidation:** the release tree reproduces the frozen research run of c1m token for token (all 76 turns identical at `max_tokens` 128 and 512) at the same speed (115.0 / 204.4 s against 116.0 / 205.2 s).
-- **One launcher:** `./serve.sh c1m | c1s | c32m | c32s`.
 
 **Single-turn, unchanged and still first-class**
 
@@ -38,32 +39,16 @@ vLLM server.
 
 ## The four profiles
 
-**Naming rule.** `c` = concurrent clients, and the number is how many the profile is tuned for (`c1`: one client, `c32`: 32 clients at once).
-The last letter is the workload: **`m` = multi-turn** (conversations that grow; the server keeps their state in a prefix cache and prefills only what is new) and
-**`s` = single-turn** (independent requests; no prefix cache, smaller memory footprint). In this README, c=N means N concurrent clients.
+Use the profile tuned for your workload. Name = `c` + number of concurrent clients + `m` (multi-turn) or `s` (single-turn).
 
-| Profile | Clients | Workload | Launch | Context | What it gives you |
-|---|---|---|---|---|---|
-| **c1m** | 1 | multi-turn: coding agent, long chat, document Q&A | `./serve.sh c1m` | 131,072 | 3.77x faster than the best stock vLLM on a 111k-token agent trace (`max_tokens` 2048); 394.4 tok/s single-request decode |
-| **c1s** | 1 | single-turn: one-shot calls, short unrelated prompts | `./serve.sh c1s` | 8,192 (262,144 tested) | 408.9 tok/s decode, 2.08x the best stock vLLM; the largest KV cache |
-| **c32m** | 32 | multi-turn: shared team assistant, agent fleet with growing histories | `./serve.sh c32m` | 16,384 | 1.58x faster than the best stock vLLM on 32 concurrent 7-turn sessions (`max_tokens` 2048) |
-| **c32s** | 32 | single-turn: batch jobs, API traffic of independent requests | `./serve.sh c32s` | 8,192 (262,144 tested) | 2,688.1 aggregate tok/s, 1.53x the best stock vLLM |
+| Profile | Best for | vs best stock vLLM | Run |
+|---|---|---|---|
+| **c1m** | One user: coding agent, long chat, document Q&A | **3.77x** | `./serve.sh c1m` |
+| **c1s** | One user: one-shot calls, short unrelated prompts | **2.08x** | `./serve.sh c1s` |
+| **c32m** | 32 users: team assistant, agent fleet | **1.58x** | `./serve.sh c32m` |
+| **c32s** | 32 users: batch jobs, API of independent requests | **1.53x** | `./serve.sh c32s` |
 
-`./serve.sh <name> [extra vllm serve args]` only chooses the existing launcher and its `--profile`; the older commands still work
-(`./serve_c1.sh --profile single|multiturn`, `./serve_c32.sh --profile single|multiturn`, `./serve_c1_accuracy.sh`). A second c1s flavor, **c1s accuracy** (`./serve_c1_accuracy.sh`),
-switches off the 3-bit overlay and runs at 357.2 tok/s; see [Accuracy and validation](#accuracy-and-validation).
-
-**Which one do I pick?**
-
-| If you... | Run |
-|---|---|
-| use a coding agent or a long chat that keeps adding to one conversation | `c1m` |
-| make independent one-shot calls with short, unrelated prompts | `c1s` |
-| serve a team or a fleet of agents whose conversations grow | `c32m` |
-| run batch jobs or serve an API of independent requests | `c32s` |
-| are not sure and have one user | `c1m` (it costs 3.6% on short unrelated prompts and is much faster whenever a prefix repeats) |
-
-Details and the reasoning are in [AI_SETUP.md](AI_SETUP.md) and the [profile comparison](#profile-comparison).
+Multi-turn multiples are at `max_tokens` 2048. Not sure and one user? Use `c1m`. Full details: [profile comparison](#profile-comparison).
 
 ## Install
 
