@@ -41,6 +41,8 @@ vLLM server.
 
 Use the profile tuned for your workload. Name = `c` + number of concurrent clients + `m` (multi-turn) or `s` (single-turn).
 
+**`c1m`** = client 1, multi-turn · **`c1s`** = client 1, single-turn · **`c32m`** = clients 32, multi-turn · **`c32s`** = clients 32, single-turn
+
 | Profile | Best for | vs bf16 on stock vLLM | Run |
 |---|---|---|---|
 | **c1m** | One user: coding agent, long chat, document Q&A | **8.2x** | `./serve.sh c1m` |
