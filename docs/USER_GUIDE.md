@@ -34,7 +34,8 @@ Four profiles; the name is **c** (concurrent clients it is tuned for) + **m** (m
 |---|---|---|
 | use a coding agent, a long chat or document Q&A with one conversation that keeps growing | **c1m** (`./serve.sh c1m`) | prefix caching and a 131,072-token window: 2.4x-3.4x the output tok/s of the best stock vLLM on a 111k-token agent trace; about 394 tokens/s for a single request ([MULTITURN.md](MULTITURN.md)) |
 | make one-shot calls with short, unrelated prompts | **c1s** (`./serve.sh c1s`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings), no prefix caching, 8,192-token window |
-| prioritize measured broad accuracy over the maximum c1s speed | **c1s accuracy** (`./serve_c1_accuracy.sh`) | W3 disabled, same drafter; 357.17 tok/s; see [all scores](ACCURACY.md) |
+| prioritize measured broad accuracy over the maximum c1s speed | **c1s-accuracy** (`./serve.sh c1s-accuracy`; `./serve_c1_accuracy.sh` still works) | W3 disabled, same drafter; 357.17 tok/s; see [all scores](ACCURACY.md) |
+| the same, for a growing conversation | **c1m-accuracy** (`./serve.sh c1m-accuracy`) | c1m without the 3-bit overlay: prefix caching, 131,072-token window, 518,963 KV tokens; measured at `max_tokens` 512 only (126.9 output tok/s on the 111k trace, 2.44x the fastest stock setting; slower than c1m); see [all scores](ACCURACY.md) |
 | serve a team or a fleet of agents whose conversations grow | **c32m** (`./serve.sh c32m`) | Hadamard W4A4 with prefix caching: 1.52x-1.58x the output tok/s of the best stock vLLM on 32-session traces ([MULTITURN.md](MULTITURN.md)) |
 | run batch jobs or an API of independent requests | **c32s** (`./serve.sh c32s`) | Hadamard W4A4 only: 2,688.13 aggregate tokens/s in one run at c=32 (vs historical 1,757.1 best stock vLLM) |
 
@@ -61,7 +62,8 @@ git clone https://github.com/atdev-company/atdev-serve
 cd atdev-serve
 docker compose --profile c1m up --build           # c1m: 1 client, multi-turn
 # docker compose --profile c1s up --build         # c1s: 1 client, single-turn
-# docker compose --profile c1s-accuracy up --build  # c1s accuracy: W3 disabled
+# docker compose --profile c1s-accuracy up --build  # c1s-accuracy: W3 disabled
+# docker compose --profile c1m-accuracy up --build  # c1m-accuracy: W3 disabled, multi-turn
 # docker compose --profile c32m up --build        # c32m: 32 clients, multi-turn
 # docker compose --profile c32s up --build        # c32s: 32 clients, single-turn
 ```
@@ -231,7 +233,7 @@ The launch scripts read these environment variables:
 | `CUDA_VISIBLE_DEVICES` | 0 | which GPU to use |
 | `MODEL` | `RedHatAI/Qwen3.8-27B-INT4` | target checkpoint (HF id or local path) |
 | `HF_REPO` (c1) | `atdev-company/Qwen3.8-27B-atdev-c1` | HF repo with the c1 model-side files (subfolders `w3/`, `drafter/`) |
-| `C1_MODE` | `fast` | `accuracy` disables W3 only; `serve_c1_accuracy.sh` selects this explicitly (implies `--profile single`) |
+| `C1_MODE` | `fast` | `accuracy` disables W3 only; `./serve.sh c1m-accuracy` / `./serve.sh c1s-accuracy` select it with `--profile multiturn` / `single` (`serve_c1_accuracy.sh` = c1s-accuracy) |
 | `PROFILE` / `--profile` | `multiturn` (c1 and c32) | `multiturn`: prefix caching + long context; `single`: the previous launch |
 | `MAX_MODEL_LEN` | 131072 (c1 multiturn), 16384 (c32 multiturn), 8192 (single) | context length of the profile |
 | `NO_WARMUP` (multiturn) | 0 | `1` skips the start-up JIT warmup |

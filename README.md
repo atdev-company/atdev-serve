@@ -52,6 +52,8 @@ Use the profile tuned for your workload. Name = `c` + number of concurrent clien
 
 Largest measured multiples (output tok/s ratios): c1m at `max_tokens` 2048, c32m at `max_tokens` 128. Not sure and one user? Use `c1m`. Full details: [profile comparison](#profile-comparison).
 
+Accuracy variants (the same stacks without the 3-bit overlay; they trade some speed): `./serve.sh c1m-accuracy` and `./serve.sh c1s-accuracy`; see [the accuracy variants](#the-accuracy-variants).
+
 ## Install
 
 You need Linux, one A100 80GB, an NVIDIA driver for CUDA 13.0, Hugging Face access, and either the CUDA 13.0 toolkit with `nvcc` (Python route) or Docker.
@@ -61,14 +63,14 @@ You need Linux, one A100 80GB, an NVIDIA driver for CUDA 13.0, Hugging Face acce
 ```bash
 git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
 ./install.sh && source atdev-env.sh      # checks the machine, creates .venv, installs vllm==0.31.0 + atdev-serve
-./serve.sh c1m                           # or c1s, c32m, c32s   (c1s accuracy flavor: ./serve_c1_accuracy.sh)
+./serve.sh c1m                           # or c1s, c32m, c32s   (accuracy variants: c1m-accuracy, c1s-accuracy)
 ```
 
 **Docker** (no CUDA toolkit needed on the host)
 
 ```bash
 git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
-docker compose --profile c1m up --build  # or c1s, c32m, c32s (c1s accuracy: c1s-accuracy; the old names c1, c1-single, c1-accuracy, c32, c32-single still work)
+docker compose --profile c1m up --build  # or c1s, c32m, c32s (accuracy variants: c1m-accuracy, c1s-accuracy; the old names c1, c1-single, c1-accuracy, c32, c32-single still work)
 ```
 
 The first start compiles kernels and downloads the models (17-19 minutes on a clean machine in our install tests, including a 34-35 GB model download and about 8 minutes of install); later starts reuse the cache. Then send a request (the launchers default to `temperature: 0`, greedy):
@@ -95,6 +97,15 @@ Verify that the server answers a chat request, then tell me the endpoint URL and
 Install atdev-serve on this machine and launch the c1s profile (one user, single-turn). Follow https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md and use STACK=c1s.
 Verify that the server answers a chat request, then tell me the endpoint URL and any problems you ran into.
 ```
+
+*c1m-accuracy / c1s-accuracy: the same, without the 3-bit overlay*
+
+```text
+Install atdev-serve on this machine and launch the c1m-accuracy profile (one user, multi-turn, no 3-bit overlay). Follow https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md and use STACK=c1m-accuracy.
+Verify that the server answers a chat request, then tell me the endpoint URL and any problems you ran into.
+```
+
+(For c1s-accuracy say "c1s-accuracy profile (one user, single-turn, no 3-bit overlay)" and use `STACK=c1s-accuracy`.)
 
 *c32m: a team or an agent fleet with growing conversations*
 
@@ -236,28 +247,29 @@ All scores are greedy, thinking off. They are task measurements on the stated sa
 on this repository's tree we re-ran the speed, the generated text (c1m: 76 of 76 turns identical), GSM8K-300 (c1m 0.963, c32m 0.963), c32m perplexity (7.365) and, for the single-turn launches, perplexity and GSM8K-300 (c32s 7.209 / 0.957, c1s 0.963).
 The stock reference of the c1s / c32s columns is the mean of two stock runs; the c1m / c32m columns use one stock run of the same harness, so the two stock columns differ slightly.
 
-| Metric | stock INT4 (mean of 2) | c1s fast | c1s accuracy | c32s | stock INT4 (1 run) | c1m | c32m |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| MMLU-Pro | 71.71% | 69.14% | 71.43% | 72.79% | 71.5% | 69.0% | 71.4% |
-| KMMLU Korean | 66.84% | 63.91% | 66.22% | 65.07% | 67.1% | 63.8% | 67.6% |
-| IFEval prompt strict | 82.90% | 82.07% | 82.99% | 82.44% | 83.4% | 81.3% | 81.4% (mean of 3 runs) |
-| IFEval prompt loose | 86.60% | 84.84% | 86.32% | 86.51% | 87.1% | 83.7% | 84.6% (mean of 3) |
-| HumanEval / HumanEval+ | 95.73 / 90.85% | 94.51 / 88.41% | 95.73 / 91.46% | 95.12 / 89.63% | 95.1 / 90.2% | 95.1 / 90.2% | 94.5 / 89.0% |
-| MBPP / MBPP+ | 91.27 / 76.46% | 89.68 / 75.66% | 92.06 / 76.98% | 92.06 / 78.04% | 91.5 / 76.7% | 88.1 / 75.4% | 89.4 / 75.9% |
-| WikiText-2 perplexity | 7.299 | 8.220 | 7.300 | 7.209 | 7.299 | 8.282 | 7.365 |
-| GSM8K, all 1319 | 94.31% | 95.00% | 94.77% | 94.69% | 94.31% | 94.24% | 94.39% |
-| GSM8K, first 300 | n/a | 96.67% | 97.00% | n/a | n/a | 96.67% (96.33% re-run on this tree) | 97.0% / 95.3% (shared / unique prefix); 96.33% re-run on this tree |
-| long-context retrieval (36 items) | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 |
+| Metric | stock INT4 (mean of 2) | c1s fast | c1s accuracy | c1m accuracy | c32s | stock INT4 (1 run) | c1m | c32m |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| MMLU-Pro | 71.71% | 69.14% | 71.43% | 71.36% | 72.79% | 71.5% | 69.0% | 71.4% |
+| KMMLU Korean | 66.84% | 63.91% | 66.22% | 67.20% | 65.07% | 67.1% | 63.8% | 67.6% |
+| IFEval prompt strict | 82.90% | 82.07% | 82.99% | 82.81% | 82.44% | 83.4% | 81.3% | 81.4% (mean of 3 runs) |
+| IFEval prompt loose | 86.60% | 84.84% | 86.32% | 86.14% | 86.51% | 87.1% | 83.7% | 84.6% (mean of 3) |
+| HumanEval / HumanEval+ | 95.73 / 90.85% | 94.51 / 88.41% | 95.73 / 91.46% | 95.73 / 90.85% | 95.12 / 89.63% | 95.1 / 90.2% | 95.1 / 90.2% | 94.5 / 89.0% |
+| MBPP / MBPP+ | 91.27 / 76.46% | 89.68 / 75.66% | 92.06 / 76.98% | 92.33 / 77.51% | 92.06 / 78.04% | 91.5 / 76.7% | 88.1 / 75.4% | 89.4 / 75.9% |
+| WikiText-2 perplexity | 7.299 | 8.220 | 7.300 | 7.3001 | 7.209 | 7.299 | 8.282 | 7.365 |
+| GSM8K, all 1319 | 94.31% | 95.00% | 94.77% | 94.31% | 94.69% | 94.31% | 94.24% | 94.39% |
+| GSM8K, first 300 | n/a | 96.67% | 97.00% | 96.33% | n/a | n/a | 96.67% (96.33% re-run on this tree) | 97.0% / 95.3% (shared / unique prefix); 96.33% re-run on this tree |
+| long-context retrieval (36 items) | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 |
 
 **Gap to stock, per profile**
 
-* **c1m and c1s fast keep the 3-bit overlay's gap:** MMLU-Pro **-2.5** (c1m) / -2.6 (c1s), KMMLU **-3.3** (c1m) / -2.9 (c1s), MBPP -3.4 (c1m); perplexity 8.2-8.3 against 7.3. This is the price of the speed; c1s accuracy (no overlay) is within about 0.3 points of stock on MMLU-Pro and 0.6 on KMMLU, at 357 tok/s.
+* **c1m and c1s fast keep the 3-bit overlay's gap:** MMLU-Pro **-2.5** (c1m) / -2.6 (c1s), KMMLU **-3.3** (c1m) / -2.9 (c1s), MBPP -3.4 (c1m); perplexity 8.2-8.3 against 7.3. This is the price of the speed; c1s accuracy (no overlay) is within about 0.3 points of stock on MMLU-Pro and 0.6 on KMMLU, at 357 tok/s. c1m accuracy (multi-turn, no overlay) is within 0.4 points of stock on MMLU-Pro (71.36 against 71.71), +0.4 on KMMLU, and has the same perplexity (7.3001 against 7.299).
   The gap does not come from multi-turn caching: c1m matches c1s fast within the noise of these sample sizes.
 * **c32s and c32m** are in the accuracy class of stock INT4: c32m MMLU-Pro -0.1, KMMLU +0.5, HumanEval+ -1.2, perplexity +0.07; **IFEval prompt strict is 2.0 points below stock** (81.4 against 83.4) and varies by up to about 4 points from run to run.
 * One configuration's Korean-knowledge score varies by about 1.4 points between runs (n=1,125); differences below about 1.5 points need several runs.
 
 The c32m profile and the single-turn Hadamard profile use the same rotated weights; c32m adds a rotation-aware 4-bit prefill GEMM. Without the rotation that GEMM cost perplexity 7.96 and 2-4 points on MMLU-Pro / KMMLU / HumanEval+ (see [docs/TECHNIQUES.md](docs/TECHNIQUES.md)).
 Pass rule of the original gates: GSM8K within 1 point of the matching stock vLLM reference and long-context 36/36. Passing these narrow gates does not establish unchanged broad accuracy.
+c1m accuracy was measured with the research-run launcher on tree 7d95f19 (the same configuration `./serve.sh c1m-accuracy` starts).
 Complete tables, sample sizes and limits: [docs/ACCURACY.md](docs/ACCURACY.md) and [docs/MULTITURN.md](docs/MULTITURN.md#accuracy-of-the-multi-turn-profiles).
 Only greedy decoding is qualified; sampling at higher temperatures is not validated in this release.
 
@@ -279,6 +291,21 @@ Only greedy decoding is qualified; sampling at higher temperatures is not valida
 
 Rule of thumb from the measurements: if a prefix repeats, the `m` profile wins by a wide margin (c1m is 2.4x-3.4x faster on long conversations). If every request is independent and short, `s` is 3.7% faster (c1: 409.5 vs 394.4 mean decode tok/s)
 and has more KV room. c1m therefore costs little when it is not needed.
+
+### The accuracy variants
+
+`c1m-accuracy` and `c1s-accuracy` are c1m and c1s without the 3-bit W3 overlay: the same INT4 target and drafter, no overlay download. Choose them when closeness to stock INT4 accuracy matters more than the last bit of speed. Accuracy scores are in [Accuracy and validation](#accuracy-and-validation).
+
+| | **c1m-accuracy** | **c1s-accuracy** |
+|---|---|---|
+| Start | `./serve.sh c1m-accuracy` (Docker profile `c1m-accuracy`) | `./serve.sh c1s-accuracy` (same as `./serve_c1_accuracy.sh`; Docker profile `c1s-accuracy`) |
+| Context window (default) | 131,072 | 8,192 |
+| KV cache at that window | 518,963 tokens (measured) | 166,803 tokens (measured) |
+| Weights | INT4 target + d16 drafter, no W3 overlay | same |
+| Prefix caching | yes (as c1m) | no |
+| Measured speed | 111k-token agent trace at `max_tokens` 512 (the only cap measured): 250.2 s, 126.9 output tok/s, 2.44x the fastest stock vLLM (52.0 tok/s) and 6.1x the bf16 default (20.8 tok/s) | 357.17 tok/s mean decode per request, 1.82x best stock vLLM |
+
+Trade-off versus c1m: c1m-accuracy is slower on the same trace (126.9 against 159.4 output tok/s at `max_tokens` 512), because the int8 prefill paths exist only for the W3 weights, and it holds a larger KV cache because it does not keep the dequantized prefill weights. The multi-turn speed of c1m-accuracy was measured at 512 only; there are no numbers for other caps.
 
 ## Context length
 
@@ -313,7 +340,7 @@ Pass `--max-model-len 262144` to the launcher (`./serve.sh c1s --max-model-len 2
 
 ## Roadmap (measured or tried, not shipped)
 
-* **c1m without the 3-bit overlay:** measured 250.3 s on the 111k trace at `max_tokens` 512 (2.49x faster than the fastest stock setting at 623.1 s; 1.22x slower than c1m), 2 repetitions, speed only, no accuracy run. Not a released profile.
+* **c1m without the 3-bit overlay:** now released as `c1m-accuracy` (see [the accuracy variants](#the-accuracy-variants)).
 * **3-bit recalibration for c1:** tried and not adopted. Extra Korean, knowledge and code calibration data lowered perplexity (WikiText-2 8.22 to 7.90-8.02) but a held-out MMLU-Pro multiple-choice proxy did not improve (60.1-60.7% against 61.1% for current W3; stock INT4 64.9%; n=700). Next candidates: learned rotation before 3-bit quantization, KD-QAT against the bf16 model, mixed bits chosen by multiple-choice sensitivity. Details in [docs/TECHNIQUES.md](docs/TECHNIQUES.md#tried-and-not-shipped).
 
 ## Changelog
@@ -465,7 +492,7 @@ GPUs are not supported by this release.
 
 ## Reproducing the numbers
 
-This repository contains the four profiles c1m, c1s, c32m and c32s (and the c1s accuracy flavor). The metric definitions, the
+This repository contains the four profiles c1m, c1s, c32m and c32s (and the accuracy variants c1m-accuracy and c1s-accuracy). The metric definitions, the
 exact baseline `vllm serve` commands and how to compare on your own GPU are in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Measure the baseline and atdev in the same session on the
 same GPU.
@@ -494,7 +521,7 @@ PyTorch's CUDA build, the local toolkit and driver compatibility.
 serve.sh                      launcher: ./serve.sh c1m|c1s|c32m|c32s
 serve_c1.sh, serve_c1_accuracy.sh, serve_c32.sh  launch scripts (features + per-stack options as env vars)
 install.sh                    venv installer with preflight checks (--dry-run to preview)
-docker/, docker-compose.yml   container image + compose profiles c1 / c1-single / c1-accuracy / c32 / c32-single
+docker/, docker-compose.yml   container image + compose profiles c1m / c1s / c1m-accuracy / c1s-accuracy / c32m / c32s (old names still work)
 AI_SETUP.md                   end-to-end setup instructions for AI coding agents
 src/atdev_serve/              the vLLM plugin: register.py (entry point), feature modules,
   csrc/                       CUDA sources (JIT-built), incl. vLLM-derived Marlin kernels
@@ -511,7 +538,7 @@ The c1 repo serves c1m and c1s, the c32 repo c32m and c32s (the repository names
 | [`RedHatAI/Qwen3.8-27B-INT4`](https://huggingface.co/RedHatAI/Qwen3.8-27B-INT4) | both stacks (target) | Apache-2.0 |
 | [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) | bf16 baseline rung only | Apache-2.0 |
 | [`z-lab/Qwen3.8-27B-DFlash2`](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) | c=1 (config; weights replaced by the atdev drafter) | Apache-2.0 |
-| [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | c1m / c1s: `w3/` + `drafter/`; c1s accuracy: the same `drafter/` only | Apache-2.0 |
+| [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | c1m / c1s: `w3/` + `drafter/`; c1m-accuracy / c1s-accuracy: the same `drafter/` only | Apache-2.0 |
 | [`atdev-company/Qwen3.8-27B-atdev-c32`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c32) | c32m / c32s: `hadamard/` GPTQ sidecar only; built-in MTP, no separate drafter | Apache-2.0 model derivatives; calibration-source attribution in the model card |
 
 The existing C1 atdev drafter and W3 calibration used only prompts from

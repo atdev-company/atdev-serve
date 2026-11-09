@@ -2,24 +2,26 @@
 
 All broad scores below are actual saved greedy generations, with thinking disabled. Percentages are observed scores, not statistical equivalence or a universal accuracy guarantee. HumanEval/MBPP include actual EvalPlus execution. No experimental recovery checkpoint is shipped.
 
-| Metric | Stock INT4 reference | C1 fast: original W3 | C1 accuracy: W3 disabled | C32 Hadamard W4A4 |
-|---|---:|---:|---:|---:|
-| MMLU-Pro (1,400) | 71.71% | 69.14% | 71.43% | 72.79% |
-| KMMLU Korean (1,125) | 66.84% | 63.91% | 66.22% | 65.07% |
-| IFEval prompt strict (541) | 82.90% | 82.07% | 82.99% | 82.44% |
-| IFEval prompt loose (541) | 86.60% | 84.84% | 86.32% | 86.51% |
-| IFEval instruction strict (834) | 87.89% | 87.65% | 88.01% | 88.01% |
-| IFEval instruction loose (834) | 90.89% | 89.69% | 90.77% | 91.01% |
-| HumanEval (164) | 95.73% | 94.51% | 95.73% | 95.12% |
-| HumanEval+ (164) | 90.85% | 88.41% | 91.46% | 89.63% |
-| MBPP (378) | 91.27% | 89.68% | 92.06% | 92.06% |
-| MBPP+ (378) | 76.46% | 75.66% | 76.98% | 78.04% |
-| WikiText-2 PPL, 40,920 tokens (lower is better) | 7.298721 | 8.219982 | 7.300041 | 7.209287 |
-| GSM8K-300 | — | 290/300 (96.67%) | 291/300 (97.00%) | — |
-| GSM8K-1319 | 1248/1319 (94.62%) | 1253/1319 (95.00%) | 1250/1319 (94.77%) | 1249/1319 (94.69%) |
-| Long-context retrieval | — | 36/36 | 36/36 | 36/36 |
+| Metric | Stock INT4 reference | C1 fast: original W3 | c1s-accuracy: W3 disabled | c1m-accuracy (multi-turn, W3 disabled) | C32 Hadamard W4A4 |
+|---|---:|---:|---:|---:|---:|
+| MMLU-Pro (1,400) | 71.71% | 69.14% | 71.43% | 71.36% | 72.79% |
+| KMMLU Korean (1,125) | 66.84% | 63.91% | 66.22% | 67.20% | 65.07% |
+| IFEval prompt strict (541) | 82.90% | 82.07% | 82.99% | 82.81% | 82.44% |
+| IFEval prompt loose (541) | 86.60% | 84.84% | 86.32% | 86.14% | 86.51% |
+| IFEval instruction strict (834) | 87.89% | 87.65% | 88.01% | — | 88.01% |
+| IFEval instruction loose (834) | 90.89% | 89.69% | 90.77% | — | 91.01% |
+| HumanEval (164) | 95.73% | 94.51% | 95.73% | 95.73% | 95.12% |
+| HumanEval+ (164) | 90.85% | 88.41% | 91.46% | 90.85% | 89.63% |
+| MBPP (378) | 91.27% | 89.68% | 92.06% | 92.33% | 92.06% |
+| MBPP+ (378) | 76.46% | 75.66% | 76.98% | 77.51% | 78.04% |
+| WikiText-2 PPL, 40,920 tokens (lower is better) | 7.298721 | 8.219982 | 7.300041 | 7.3001 | 7.209287 |
+| GSM8K-300 | — | 290/300 (96.67%) | 291/300 (97.00%) | 96.33% | — |
+| GSM8K-1319 | 1248/1319 (94.62%) | 1253/1319 (95.00%) | 1250/1319 (94.77%) | 94.31% | 1249/1319 (94.69%) |
+| Long-context retrieval | — | 36/36 | 36/36 | 36/36 | 36/36 |
 
 ## Multi-turn profiles
+
+The `c1m-accuracy` column above is the multi-turn c1m stack without the 3-bit overlay (`./serve.sh c1m-accuracy`). It was measured with the research-run launcher on tree 7d95f19, the same configuration. IFEval instruction-level scores were not recorded for it.
 
 `serve_c1.sh` (default, `multiturn`) and `serve_c32.sh` (default, `multiturn`) add prefix caching and chunked-prefill kernels to the
 C1 fast and C32 Hadamard stacks. Their gate and broad scores were measured on the frozen bundles with the prefix cache on and are listed in
