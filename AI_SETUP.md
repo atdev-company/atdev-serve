@@ -126,12 +126,12 @@ GPUs: judge P2 / P4 only by the row for the chosen index.
 | P8 | `command -v python3.12 \|\| command -v uv` | a path is printed | venv path needs Python 3.12 or uv: ask to install (R1) or use Docker |
 | P9 | `for d in "$CUDA_HOME" /usr/local/cuda-13.0 /usr/local/cuda; do [ -x "$d/bin/nvcc" ] && "$d/bin/nvcc" --version \| grep -q 'release 13.0' && echo "CUDA_DIR=$d" && break; done` | a `CUDA_DIR=` line (that directory has nvcc `release 13.0`) | venv path needs the CUDA 13.0 toolkit: ask to install it (R1), or use Docker, or try F2 |
 | P10 | `g++ --version \| head -1` | prints a version | `sudo apt install build-essential` (R1) |
-| P11 | `PORT="${PORT:-8100}"; (ss -ltn "sport = :$PORT" 2>/dev/null \| grep -q LISTEN) && echo PORT_BUSY \|\| echo PORT_FREE` | `PORT_FREE` | choose another port: `export PORT=<free port>` for the Python route (`ATDEV_PORT` for Docker) and use it in every URL below |
+| P11 | `PORT="${PORT:-8100}"; if command -v ss >/dev/null; then ss -ltn "sport = :$PORT" 2>/dev/null \| grep -q LISTEN; else curl -s -o /dev/null -m 2 "http://127.0.0.1:$PORT/health"; fi && echo PORT_BUSY \|\| echo PORT_FREE` | `PORT_FREE` | choose another port: `export PORT=<free port>` for the Python route (`ATDEV_PORT` for Docker) and use it in every URL below |
 
 **Choose the install path.** If P7 passes, use **Phase 2A (Docker)**. If not, use **Phase 2B
 (venv)**, which requires P8, P9 and P10 to pass.
 
-**Choose the stack.** Use the decision guide at the top. Set exactly one of `STACK=c1m`, `STACK=c1s`, `STACK=c1s-accuracy`, `STACK=c32m`, `STACK=c32s`. Docker uses the compose profile with the matching name:
+**Choose the stack.** Use the decision guide at the top. Set exactly one of `STACK=c1m`, `STACK=c1s`, `STACK=c1s-accuracy`, `STACK=c32m`, `STACK=c32s`.
 Docker uses the compose profile of the same name (the older names `c1`, `c1-single`, `c1-accuracy`, `c32`, `c32-single` still work as aliases); set `COMPOSE_PROFILE`:
 
 ```bash
@@ -196,6 +196,7 @@ nvcc --version | grep -q 'release 13.0' && echo NVCC_OK                 # -> NVC
 `serve.sh` is the entry point: `./serve.sh c1m | c1s | c32m | c32s` (c1s accuracy has its own script). Check the port first (P11), and run the commands below from `$REPO`.
 
 ```bash
+cd "$REPO"
 source "$REPO/atdev-env.sh"
 export CUDA_VISIBLE_DEVICES=<gpu index from P4>
 export PORT="${PORT:-8100}"        # the launch scripts read PORT; the check URLs below use it too
