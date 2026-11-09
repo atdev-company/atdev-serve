@@ -67,7 +67,7 @@ class Hadamard(unittest.TestCase):
     def test_gdn_extension_hook_accepts_both_selected_kernels_and_wraps_them(self):
         from atdev_serve import gdn_single_state as gss
         gv=Path(gss.__file__).parent/'csrc'/'gdn_var'
-        for name,ok in (('gdn_ss15h.cu',True),('gdn_ss12h.cu',True),('gdn_ss12.cu',False)):
+        for name,ok in (('gdn_ss15h.cu',True),('gdn_ss12h.cu',True),('../gdn_ss.cu',False)):
             env={'ATDEV_A4_REAL':'had3','ATDEV_OPT':'a4_sim,gdn_single_state','ATDEV_GDN_SRC':str(gv/name)}
             with mock.patch.dict(os.environ,env),mock.patch.object(gss,'_EXT',None),\
                  mock.patch('torch.utils.cpp_extension.load',return_value=SimpleNamespace(gdn_ss=mock.Mock())) as load:

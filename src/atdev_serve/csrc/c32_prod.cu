@@ -19,7 +19,7 @@
 
 // C32h-mk (MK=1, ATDEV_C32_MK=1): ex2.approx.ftz.f32 in the sigmoid and the branch-free quotient
 // q1 = fma(fma(-sc, y*rc, y), rc, y*rc), rc = div.rn(1, sc) in place of div.rn.ftz(y, sc): s4 nibbles proven equal
-// for every bf16 amax / bf16 y and sigmoid bits equal for every bf16 g (scripts/c32hmk_exhaust.cu).
+// for every bf16 amax / bf16 y and sigmoid bits equal for every bf16 g.
 #ifndef MK
 #define MK 0
 #endif

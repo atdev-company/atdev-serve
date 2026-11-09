@@ -191,7 +191,7 @@ if triton is not None:
         yy = tl.reshape(y, [NGB, 128])
         amax = tl.max(tl.abs(yy), axis=1)
         sc = tl.maximum(amax, 1e-8) * (1.0 / 7.0)
-        if MK:  # C32h-mk: branch-free quotient, nibbles == div_rn for every bf16 y (scripts/c32hmk_exhaust.cu)
+        if MK:  # C32h-mk: branch-free quotient, nibbles == div_rn for every bf16 y
             rc = tl.extra.cuda.libdevice.div_rn(1.0, sc)
             scb = tl.broadcast_to(sc[:, None], yy.shape)
             rcb = tl.broadcast_to(rc[:, None], yy.shape)
@@ -344,7 +344,7 @@ def fq_linear(xq: torch.Tensor, xs: torch.Tensor, w_q: torch.Tensor, w_s: torch.
 
 
 _CS_ON = [False]  # ATDEV_C32C_CSUM=1: attn o_proj + GDN out_proj (set in register)
-_CS_DOWN = [False]  # ATDEV_C32C_CSUM=2: + MLP down (in-situ loss: LEDGER C32c-prof)
+_CS_DOWN = [False]  # ATDEV_C32C_CSUM=2: + MLP down
 
 
 def fq_linear_cs(xq: torch.Tensor, xs: torch.Tensor, w_q: torch.Tensor, w_s: torch.Tensor,
@@ -390,11 +390,9 @@ def _fq_linear_fake(xq, xs, w_q, w_s, n, k):
 # custom ops
 # ---------------------------------------------------------------------------
 
-# C32h-mk (LEDGER C32hmk-*): ATDEV_C32_MK=1 -> every s4 producer uses the bit-identical branch-free quotient
-# (Triton: MK constexpr of _a4_pack_store; CUDA: c32_prod / c32c_csum MK builds); ATDEV_C32_MKCHK=<file>: shadow-run
-# the other variant after every a4 producer call (in the CUDA graphs) and count s4 word / scale mismatches on device
+# C32h-mk: ATDEV_C32_MK=1 -> every s4 producer uses the bit-identical branch-free quotient
+# (Triton: MK constexpr of _a4_pack_store; CUDA: c32_prod / c32c_csum MK builds)
 _MK = os.environ.get("ATDEV_C32_MK", "0") == "1"
-_MKCHK = os.environ.get("ATDEV_C32_MKCHK", "") != ""
 _NORM_WARPS = int(os.environ.get("ATDEV_NORMQ_WARPS", "8"))  # int8 norm_quant program width (P3 microbench)
 
 
@@ -463,12 +461,6 @@ def norm_quant(x: torch.Tensor, residual: torch.Tensor | None, weight: torch.Ten
                 ro, ro.stride(0), b["a4_pk"], b["a4_s"], m, n, eps, 16 * tmb, tmb,
                 HAS_RES=has_res, WANT_BF16=want_bf16, BLOCK=triton.next_power_of_2(n), NGB=ngb, MK=_MK,
                 num_warps=warps)
-            if _MKCHK:  # C32h-mk shadow check: the other quotient variant into scratch, compared on device
-                from atdev_serve import c32hmk_check as ck
-                ck.check("tchunk", lambda pk2, s2: _norm_a4_chunk_kernel[(16 * tmb, triton.cdiv(n // 128, ngb))](
-                    x, x.stride(0), r, r.stride(0), weight, gs, xb, 0, torch.empty_like(ro), ro.stride(0), pk2, s2,
-                    m, n, eps, 16 * tmb, tmb, HAS_RES=has_res, WANT_BF16=False, BLOCK=triton.next_power_of_2(n),
-                    NGB=ngb, MK=not _MK, num_warps=warps), b["a4_pk"], b["a4_s"], n, 16 * tmb, tmb)
         return xb, xq, xs, ro
     block = triton.next_power_of_2(n)
     sa = _sa_buf(dev, xq)
@@ -515,10 +507,6 @@ def silu_quant(gu: torch.Tensor, gs: torch.Tensor, cfg=None, n_next: int = 0
         if _cuda_prod() and _al16(gu) and n % 256 == 0:
             from atdev_serve import c32_prod
             c32_prod.silu_a4(gu, gs, b["a4_pk"], b["a4_s"], m, n, 16 * tmb, tmb)
-            if _MKCHK:
-                from atdev_serve import c32hmk_check as ck
-                ck.check("silu", lambda pk2, s2: c32_prod.silu_a4(gu, gs, pk2, s2, m, n, 16 * tmb, tmb, mk=not _MK),
-                         b["a4_pk"], b["a4_s"], n, 16 * tmb, tmb)
             return q, s
         ngb, warps = (int(v) for v in os.environ.get("ATDEV_FQ_A4_SILU", "8,4").split(","))
         _silu_a4_kernel[(16 * tmb, triton.cdiv(n // 128, ngb))](
@@ -572,10 +560,6 @@ def gate_quant(a: torch.Tensor, g: torch.Tensor, gs: torch.Tensor, n_next: int =
         if _cuda_prod() and _al16(a, g) and n % 256 == 0:
             from atdev_serve import c32_prod
             c32_prod.gate_a4(a, g, gs, b["a4_pk"], b["a4_s"], m, n, 16 * tmb, tmb)
-            if _MKCHK:
-                from atdev_serve import c32hmk_check as ck
-                ck.check("gate", lambda pk2, s2: c32_prod.gate_a4(a, g, gs, pk2, s2, m, n, 16 * tmb, tmb, mk=not _MK),
-                         b["a4_pk"], b["a4_s"], n, 16 * tmb, tmb)
             return q, s
         ngb = 16 if (os.environ.get("ATDEV_A4_REAL") == "had3" and "a4_sim" in os.environ.get("ATDEV_OPT", "").split(",")) else 8  # selected Hadamard tl.dot needs 16 groups
         _gate_a4_kernel[(16 * tmb, triton.cdiv(n // 128, ngb))](
@@ -810,10 +794,5 @@ def register() -> None:
     from atdev_serve import c32_ne
     if c32_ne.enabled():  # C32-NE: norm folded into the W4A4 GEMM epilogues (model-level forward)
         c32_ne.register()
-    if os.environ.get("ATDEV_CONV_UPDATE_CFG"):  # bit-identical GDN conv launch config (conv_tune.py)
-        from atdev_serve import conv_tune
-        conv_tune.install()
-        log.warning("atdev %s: causal_conv1d_update launch BLOCK_N,num_warps = %s", OPT_NAME,
-                    conv_tune.CFG)
     log.warning("atdev %s: Qwen3NextDecoderLayer.forward -> fused norm/act + int8 quant, "
                 "pre-quantised marlin_plus GEMMs", OPT_NAME)

@@ -1,6 +1,6 @@
 """PFX-s9: prefill / mixed-prefill attention through FlashAttention-2 instead of TRITON_ATTN's 2D unified kernel.
 
-Finding (results/PFX-s9, scripts/bench_pfx9_attn.py): on the Qwen3.8-27B full-attention shape (24 q heads, 4 kv heads,
+Finding (measured): on the Qwen3.8-27B full-attention shape (24 q heads, 4 kv heads,
 d=256, paged block 416) vLLM's Triton ``kernel_unified_attention`` runs prefill at 31-40 TFLOP/s (10-13 % of the A100
 bf16 peak); vllm_flash_attn FA2 runs 104-143 TFLOP/s on the same paged cache (3.1-3.8x faster), outputs equal to
 bf16 rounding (mean rel diff 2e-3, a different online-softmax order, NOT bit-identical).

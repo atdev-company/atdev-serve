@@ -107,13 +107,9 @@ class SplitHead:
             raise ValueError(f"ATDEV_VSPLIT_FBITS must be 4, 8 or 16, got {self.fbits}")
         # ATDEV_VSPLIT_FA8=1 (with FBITS=8): F as int8 per-channel W8A8 (per-token int8 activations,
         # CUTLASS int8 GEMM, one launch at any M) instead of the g128 W8A16 Marlin shadow
-        # ATDEV_VSPLIT_FA8=2: int8 g128 W8A16 Triton kernel (bf16 activations, one pass at M<=128)
         fa8 = os.environ.get("ATDEV_VSPLIT_FA8", "0") if self.fbits == 8 else "0"
         self.fa8 = fa8 == "1"
-        if fa8 == "2":
-            from atdev_serve.w8_head import W8G128Head
-            self.fq = W8G128Head(self.fw)
-        elif self.fa8:
+        if self.fa8:
             self.fq = W8A8Head(self.fw)
         else:
             self.fq = (ShadowHead(self.fw, ShadowHeadConfig(bits=self.fbits, group_size=128,

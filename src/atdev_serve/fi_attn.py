@@ -1,7 +1,7 @@
 """FlashInfer fa2 paged attention for uniform spec-decode verify batches on the TRITON_ATTN backend
 (ATDEV_OPT=fi_attn). Engine-only (kernel), c=32 target: MTP k=1 -> every request verifies 2 query rows.
 
-Microbench (scripts/bench_fi_c32.py, page 416 = this model's attention page, 32 req x 2 rows, P6-like context
+Microbench ( page 416 = this model's attention page, 32 req x 2 rows, P6-like context
 mix 100-1200): Triton unified_attention 127.6 us/layer -> FlashInfer 99.0 (0.78x) = -0.46 ms/step over the 16
 full-attention layers; 1k 0.85x, 2k 0.83x, 4k 0.82x. vLLM's own FLASHINFER backend lost e2e (FI-base) through its
 per-layer/per-step overheads; here ONE plan per step is shared by all 16 layers.

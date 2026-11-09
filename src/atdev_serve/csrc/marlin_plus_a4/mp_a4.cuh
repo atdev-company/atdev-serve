@@ -1426,7 +1426,7 @@ __global__ void __launch_bounds__(threads, MINB) MarlinA4(MARLIN_KERNEL_PARAMS A
   };
 
 #if A4_FF
-  // FF-port (LEDGER W3-trim-ff): staged first pipeline fill at kernel start only. A4_FF=1: __nanosleep(A4_FF_NS)
+  // FF-port: staged first pipeline fill at kernel start only. A4_FF=1: __nanosleep(A4_FF_NS)
   // after stage 0; A4_FF=2: after every prologue stage but the last. Fetch timing only -> bit-identical.
   bool ff_first = true;
   auto start_pipes = [&]() {

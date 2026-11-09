@@ -125,6 +125,3 @@ def register_all():
     if int(os.environ.get("ATDEV_GDN_SMALL", "0")) > 0:  # tiny GDN prefill chunks: recurrent kernel instead of chunked FLA
         from atdev_serve import gdn_small
         gdn_small.install()
-    if os.environ.get("ATDEV_STEPLOG"):
-        from atdev_serve import steplog
-        steplog.install()

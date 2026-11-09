@@ -29,7 +29,7 @@ import torch
 log = logging.getLogger("atdev_serve")
 _B: dict = {}
 _STATS = {"fused": 0, "fallback": 0}
-# extra defines of the A4_SILU build, e.g. "A4_SILU_DEFER=1,A4_SILU_UNR=2" (LEDGER C32h-mb: quant after the next
+# extra defines of the A4_SILU build, e.g. "A4_SILU_DEFER=1,A4_SILU_UNR=2" (quant after the next
 # slice's prologue, +16 tmb * 88 B smem (DEFER 2: * 152 B) -> not for tmb 8 at 2 CTAs/SM)
 _DEFS = os.environ.get("ATDEV_C32H_DEFS", "")
 _DEFER = "A4_SILU_DEFER=1" in _DEFS or "A4_SILU_DEFER=2" in _DEFS

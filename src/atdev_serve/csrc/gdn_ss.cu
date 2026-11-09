@@ -554,7 +554,7 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_ss2_kernel(Args p) {
 // ---------------------------------------------------------------------------
 // v3: persistent CTAs with a one-item-ahead cp.async pipeline (c >= 8 regime).
 // v1/v2 measured ~100 us at 32 requests even with the state store disabled
-// (results/gdn-cuda-var.txt): the per-(request, head) CTA is a serial chain
+// (measured): the per-(request, head) CTA is a serial chain
 // (index loads -> state loads -> compute -> norm), not a bandwidth stream.
 // Here each CTA walks items b, b+G, b+2G, ... and, while computing item i
 // from registers, has every global input of item i+1 (state bytes, raw

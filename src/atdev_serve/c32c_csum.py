@@ -25,7 +25,6 @@ _EXT: list = [None, None]
 _ST: dict = {"for": 0, "K": 0, "grid": 0, "n": 0}
 _P: dict = {}
 SMAX, ROWS, TN, NMAX = 4, 128, 64, 5120
-_CHK = [os.environ.get("ATDEV_C32_MKCHK", "") != ""]
 _STATS = {"gemm": 0, "norm": 0, "mat": 0}
 
 
@@ -116,11 +115,6 @@ def materialise(x: torch.Tensor) -> None:
 
 def norm_a4(x, r, w, gs, xb, ro, apk, as_, m, eps, m_pad, tmb) -> None:
     ext().csum_norm_a4(_pbuf(x.device), _ST["K"], _ST["grid"], r, w, gs, xb, ro, apk, as_, m, eps, m_pad, tmb)
-    if _CHK[0]:  # C32h-mk shadow check: the other variant on the same P slots (idempotent) into scratch
-        from atdev_serve import c32hmk_check as ck
-        ck.check_csum(lambda pk2, s2, xb2, ro2: ext(not ck.MK).csum_norm_a4(
-            _pbuf(x.device), _ST["K"], _ST["grid"], r, w, gs, xb2, ro2, pk2, s2, m, eps, m_pad, tmb),
-            apk, as_, xb, ro, w.shape[0], m_pad, tmb)
     _ST["for"] = 0
     if _STATS["norm"] == 0:
         log.warning("atdev c32c_csum: norm producer sums the GEMM slice partials (M=%d)", m)

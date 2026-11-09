@@ -2,7 +2,7 @@
 (ATDEV_OPT=...,verify_split_head,vsplit_mtp + ATDEV_VSPLIT_FAST=1). Output bit-identical.
 
 At c=32, MTP k=2 every decode step verifies 96 rows (32 req x 3). The stock chain after
-the transformer (LEDGER C32-prof, eager, 1.58 ms) is
+the transformer (eager, 1.58 ms) is
 
   F = bf16 cuBLAS head part (65536 rows)             0.47 ms
   tail = int4 Marlin W4A8 (182784 rows) at M=96      0.76 ms  (stock Marlin = 2 launches,

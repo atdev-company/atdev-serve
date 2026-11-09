@@ -5,7 +5,7 @@ The c=1 greedy tree verify (verify_split_head FAST argmax, M = 16 rows) normally
 head (64k int8 F rows + int4 tail, ~0.8 GB, ~525 us) and uses those low-bit values as final logits.
 Here:
   1. approx logits of the whole vocabulary = (h A) B^T, a data-whitened rank-r factorisation of the
-     lm_head (scripts/lr1_fit.py: A = C^-1/2 Q_r, B = W C^1/2 Q_r, C = E[h h^T] of logged target final
+     lm_head (offline fit: A = C^-1/2 Q_r, B = W C^1/2 Q_r, C = E[h h^T] of logged target final
      hidden states; B is built from the bf16 lm_head at load: r=512 -> 254 MB),
   2. exact top-K of the approx values per row (torch.topk),
   3. exact bf16 rescoring of the K candidates against the original lm_head rows (fp32 dot -> bf16),
@@ -13,7 +13,7 @@ Here:
 The output differs from the exact bf16 argmax only when the exact argmax is outside the top-K approx
 values (LR1 offline: r=512 K=128 misses 0.08 % of rows vs 0.25 % for the deployed split head).
 
-  ATDEV_VSPLIT_LR=<file>        factor file {A, T} from scripts/lr1_fit.py (needs verify_split_head +
+  ATDEV_VSPLIT_LR=<file>        factor file {A, T} from an offline fit (needs verify_split_head +
                                 ATDEV_VSPLIT_FAST=1; only the greedy tree argmax path uses it)
   ATDEV_VSPLIT_LR_K=128         candidates per row = exact global top-K of the approx values (power of 2):
                                 threshold = K-th largest of the 486 per-512-chunk maxima (>= the K-th value),
@@ -25,7 +25,7 @@ values (LR1 offline: r=512 K=128 misses 0.08 % of rows vs 0.25 % for the deploye
   ATDEV_VSPLIT_LR_MAXM=16       larger batches -> the deployed split head
   ATDEV_VSPLIT_LR_DUMP=<file>   diagnostic (syncs every step): save the first ATDEV_VSPLIT_LR_DUMP_N (default
                                 100000) verify rows {H [N, d] bf16, am = exact bf16 argmax} for refitting the factors
-                                on the served stack's hidden states (scripts/lr1_fit.py --hid <file>)
+                                on the served stack's hidden states
   (LR1b) ATDEV_VSPLIT_LR_DUMP_EVERY=k  dump only every k-th verify call (decorrelates rows; default 1)
          ATDEV_VSPLIT_LR_DUMP_SHARD=n  write shards <dump>.<phase>.<idx>.pt every n rows (default 0 = one file
                                 at DUMP_N as before); each shard {H, am_lr = [exact bf16, LR, deployed split

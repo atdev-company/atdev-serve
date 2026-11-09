@@ -311,10 +311,10 @@ Pass `--max-model-len 262144` to the launcher (`./serve.sh c1s --max-model-len 2
 * **Do the profiles give the same answers as stock vLLM?** No. Quantized weights, 4-bit activations and different attention kernels change numerics; see [Accuracy and validation](#accuracy-and-validation).
 * More troubleshooting: [docs/USER_GUIDE.md](docs/USER_GUIDE.md#6-troubleshooting) and the failure table in [AI_SETUP.md](AI_SETUP.md).
 
-## Roadmap (measured or in progress, not shipped)
+## Roadmap (measured or tried, not shipped)
 
 * **c1m without the 3-bit overlay:** measured 250.3 s on the 111k trace at `max_tokens` 512 (2.49x faster than the fastest stock setting at 623.1 s; 1.22x slower than c1m), 2 repetitions, speed only, no accuracy run. Not a released profile.
-* **3-bit recalibration for c1:** in progress; no result yet. Earlier recovery attempts and why they were rejected are in [docs/TECHNIQUES.md](docs/TECHNIQUES.md#tried-and-not-shipped).
+* **3-bit recalibration for c1:** tried and not adopted. Extra Korean, knowledge and code calibration data lowered perplexity (WikiText-2 8.22 to 7.90-8.02) but a held-out MMLU-Pro multiple-choice proxy did not improve (60.1-60.7% against 61.1% for current W3; stock INT4 64.9%; n=700). Next candidates: learned rotation before 3-bit quantization, KD-QAT against the bf16 model, mixed bits chosen by multiple-choice sensitivity. Details in [docs/TECHNIQUES.md](docs/TECHNIQUES.md#tried-and-not-shipped).
 
 ## Changelog
 

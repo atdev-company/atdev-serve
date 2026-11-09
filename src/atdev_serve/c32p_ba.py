@@ -1,4 +1,4 @@
-"""C32p (LEDGER C32p-*): GDN in_proj_ba on a side CUDA stream, concurrent with the causal conv
+"""C32p: GDN in_proj_ba on a side CUDA stream, concurrent with the causal conv
 (ATDEV_C32P_BA=1, needs fused_quant + gdn_single_state CUDA verify). Bit-identical (same cuBLAS GEMM).
 
 In the bcpsz stack each GDN layer runs, on one stream, qkvz MarlinA4 GEMM -> in_proj_ba (cuBLAS Kernel2
@@ -31,7 +31,7 @@ log = logging.getLogger("atdev_serve")
 _SIDE: dict = {}
 _JOIN: list = [None]  # (current stream, event) of the armed join
 _STATS = {"fork": 0, "serial": 0, "late_join": 0}
-# C32n2 (LEDGER C32n2-ba*): ATDEV_C32N_BA=side -> c32n_ba.py (cuBLAS-exact one-launch ba kernel)
+# C32n2: ATDEV_C32N_BA=side -> c32n_ba.py (cuBLAS-exact one-launch ba kernel)
 _NPC = int(os.environ.get("ATDEV_C32N_BA_NPC", "4"))
 
 

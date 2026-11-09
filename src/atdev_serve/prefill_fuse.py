@@ -4,7 +4,7 @@ At M beyond the marlin_c1 epilogue range c1_fuse runs eager torch fp32 math arou
   * _unperm_silu   : g4.float(); g / (1 + exp(-g)) * u  -> bf16   (gate/up un-permute + SiLU*mul)
   * e6w3_prod tail : xf = h.float() + res.float(); sum(xf^2); xf * (nw + 1) -> bf16; xf -> bf16
   * e6w3_cons head : (a.float() * r[:, None]) -> bf16
-These are ~380 ms of the 1.56 s of a 3.8k-token prefill (profile results/PFX-s5/prof_ours). Each is
+These are ~380 ms of the 1.56 s of a 3.8k-token prefill (profiled). Each is
 replaced by one kernel with the same elementwise fp32 operations in the same order (exp = libdevice
 expf like torch, division IEEE round-to-nearest); the only difference is the reduction order of
 sum(xf^2) (fp32), which feeds the next layer's rstd.

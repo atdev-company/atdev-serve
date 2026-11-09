@@ -1,4 +1,4 @@
-"""C32k (LEDGER C32k-*): bit-identical glue cuts around the c=32 MTP drafter passes / verify screen.
+"""C32k: bit-identical glue cuts around the c=32 MTP drafter passes / verify screen.
 
   ATDEV_C32K_SCR=1   draft_vocab._screen_chunk_kernel (Triton per-chunk exact top-S of the approx logits, used by
                      the verify-head W4A4 screen (vsplit_a4scr, CH 4096) and the 64k draft-vocab screen of every

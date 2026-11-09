@@ -3,7 +3,7 @@
 Problem: vLLM 0.31 hybrid prefix caching writes recurrent (GDN) state only at block-aligned positions
 inside *prefill*, so the reply a request generates is never reusable as prefix by the next turn.
 
-Design (see results/EORCKPT/DESIGN.md):
+Design:
 * Hash unit = 16 tokens (``--prefix-match-unit 16``).  A hit at position x needs the GDN + conv state after
   exactly x tokens, x % 16 == 0.
 * Worker: after every step (hook on ``MambaSpecDecodeGPUContext.run_fused_postprocess_align``) a request whose

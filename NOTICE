@@ -38,7 +38,7 @@ are kept unchanged in the files that carry them.
 4. flash-linear-attention (https://github.com/fla-org/flash-linear-attention) -- MIT License
    Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
    The GDN (gated delta-rule) kernels in gdn_single_state.py, gdn_tree.py, csrc/gdn_tree.cu and
-   csrc/gdn_var/gdn_ss12.cu follow
+   csrc/gdn_var/gdn_ss12h.cu and gdn_ss15h.cu follow
    the operation order of the FLA kernels shipped inside vLLM (vllm/third_party/flash_linear_attention) to stay
    bit-compatible; pin_autotune.py pins the autotune choices of those vLLM-shipped FLA kernels.
 

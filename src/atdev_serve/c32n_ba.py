@@ -1,4 +1,4 @@
-"""C32n2-ba (LEDGER C32n2-ba*): GDN in_proj_ba as ONE low-CTA launch, bit-identical to the deployed cuBLAS call
+"""C32n2-ba: GDN in_proj_ba as ONE low-CTA launch, bit-identical to the deployed cuBLAS call
 (torch.mm(x, W^T) = cutlass s16816 64x64 split-K S + cublasLt splitKreduce; csrc/c32n_ba.cu).
 
 cuBLAS's per-element order is a sequential mma.m16n8k16 chain per k-split, then the S fp32 partials summed

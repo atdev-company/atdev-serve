@@ -1,7 +1,7 @@
 """c=1 tree-verify full attention as a dedicated CUDA split-KV kernel (ATDEV_OPT=tree_attn; csrc/tree_attn.cu).
 
 Replaces, on the 16 target full-attention layers of a c=1 DFlash2 tree verify, vLLM's TRITON_ATTN 3D path
-(kernel_unified_attention 24.8 us + reduce_segments 5.5 us per layer, results/prof-DG-stack) by
+(kernel_unified_attention 24.8 us + reduce_segments 5.5 us per layer) by
 
   split   : grid (kv heads x hspl, nsplit); a CTA holds G / hspl q heads (default hspl 2 -> 3 heads = 48 query rows,
             sharing one K/V read), warp pair per head (Q in registers, keys split for QK^T, dims split for PV),
@@ -12,7 +12,7 @@ Replaces, on the 16 target full-attention layers of a c=1 DFlash2 tree verify, v
 
 Engaged inside vLLM's ``unified_attention`` (the split-point op) when the call is dflash_tree's tree verify
 (qq_bias, one request, T <= 16 query rows, bf16 cache, no sinks / alibi / softcap / window / fp8). Anything else
-runs the original launcher. Microbench (scripts/bench_tree_attn.py, 16 layers, distinct caches, 1k ctx):
+runs the original launcher. Microbench ( 16 layers, distinct caches, 1k ctx):
 attention 585 -> 324 us/step; with gate + KV folds the whole block 654 -> 340 us/step.
 
 Gate fold (ATDEV_TREE_ATTN_GATE=1, needs c1_fuse): c1_fuse's attention layer calls ``vllm::atdev_attn_gated``
@@ -61,7 +61,7 @@ HS = 256
 _EXT = None
 _BUF: dict = {}
 _STATS = {"run": 0, "logged": False, "skip_logged": set()}
-# ATDEV_TREE_HSPL=auto|1: long-context retune (results/KV8): the NON-exact kernel with one CTA per kv head (hspl 1, 6 q heads / 96 rows
+# ATDEV_TREE_HSPL=auto|1: long-context retune: the NON-exact kernel with one CTA per kv head (hspl 1, 6 q heads / 96 rows
 # share every K/V tile) and nsplit = SMs / kv heads. 100k ctx 16 layers: 11.7 -> 5.3 ms, 4k 725 -> 589 us, 1k equal; no ctx where the
 # exact hspl-3 kernel is faster (the grid is fixed for CUDA graphs; idle splits exit), so "auto" is one config. Folds gate + KV write like the
 # shipped runtime. Not bit-identical to TRITON_ATTN (see EXACT mode); gate with GSM8K + longctx.
@@ -124,7 +124,7 @@ def hspl_for(g: int) -> int:
     """CTAs per kv head along its q heads (default 2: 3 heads / 48 query rows per CTA for Qwen3.8; KS-c1 sweep:
     1k ctx 20.3 us vs 22.4 (hspl 1) / 22.0 (hspl 3) per layer)."""
     # exact mode (16 segments -> grid kvh x hspl x 16): 1 -> hspl 1 (64 CTAs, 1 wave), 2 -> hspl 3 (192 CTAs,
-    # 2 / SM); TA-exact microbench (scripts/bench_tree_attn.py --exact): 3-stage hspl 2 needs 2 waves above 1k ctx
+    # 2 / SM); TA-exact microbench: 3-stage hspl 2 needs 2 waves above 1k ctx
     dflt = {1: "1", 2: "3"}.get(EXACT, "2")
     env = int(os.environ.get("ATDEV_TREE_ATTN_HSPL", dflt))
     return env if env >= 1 and g % env == 0 else 1

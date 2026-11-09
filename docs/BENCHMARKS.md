@@ -53,8 +53,8 @@ engine-only figure was 284.4-285.7 across sessions. 284.4 is the re-measurement 
 kernel-selection mode that ships.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="img/ladder_c1-dark.svg">
-  <img alt="c=1 ladder chart" src="img/ladder_c1.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="img/speed_c1s-dark.svg">
+  <img alt="c=1 ladder chart" src="img/speed_c1s.svg">
 </picture>
 
 ### Historical c=32 ladder (unrotated W4A4; not the shipped profile)

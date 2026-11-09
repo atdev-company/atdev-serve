@@ -40,7 +40,7 @@ class Consumers(unittest.TestCase):
     def test_register_installs_every_frontend_hook(self):
         body = (SRC / 'register.py').read_text()
         for flag, module in (('ATDEV_SWA_FINE', 'swa_fine'), ('ATDEV_TOK_CACHE', 'tok_cache'), ('ATDEV_GDN_SMALL', 'gdn_small'),
-                             ('ATDEV_STEPLOG', 'steplog'), ('ATDEV_EOR_CKPT', 'eor_ckpt'), ('ATDEV_DFT_APC', 'GDN_SS_ALIGN')):
+                             ('ATDEV_EOR_CKPT', 'eor_ckpt'), ('ATDEV_DFT_APC', 'GDN_SS_ALIGN')):
             self.assertIn(flag, body)
             self.assertIn(module, body)
             if module != 'GDN_SS_ALIGN':

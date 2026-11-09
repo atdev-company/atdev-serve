@@ -6,7 +6,7 @@ written to the MTP attention cache. Only the last accepted row of each request i
 (`last_hidden_states[last_token_indices]` -> draft logits and the hidden state of the next pass),
 so after attention everything is row-wasted work: o_proj, post-attention norm, gate_up, down and
 the final norm run on 96 rows instead of 32 (stock W4A16 Marlin also splits M=96 into a 64-row
-and a 32-row launch, each streaming the full weight). LEDGER C32-xp: o 66 -> 24, gate_up 210 ->
+and a 32-row launch, each streaming the full weight). o 66 -> 24, gate_up 210 ->
 82, down 145 -> 53 us per step.
 
 This module, for the first pass only:

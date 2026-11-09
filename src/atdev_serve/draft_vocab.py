@@ -9,7 +9,7 @@ frequent tokens never changes generated text, only the acceptance rate
 Stock reads the whole 248320 x 5120 bf16 lm_head (2.54 GB) per draft pass.
 This module keeps the rows of the first ``ATDEV_DRAFT_VOCAB_SIZE`` ids of
 ``atdev_serve/data/token_order.npy`` (frequency order measured on target
-outputs of the A10 train split, scripts/build_draft_vocab.py; held-out
+outputs of the A10 train split; held-out
 coverage 96.9% at 32k, 99.2% at 64k) and computes draft top-k over them:
 
 * bits=16: contiguous bf16 copy of the sub-head, one GEMM (N=64k: 0.67 GB).

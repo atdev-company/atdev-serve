@@ -249,7 +249,7 @@ def _int8_rot(y_bf16: torch.Tensor, gs: torch.Tensor, n_next: int = 0):
 def _register_real_had3() -> None:
     """ATDEV_A4_REAL=had3: the FULL c=32 stack (fused_quant / gdn_a4_fold / c32_prod / c32c csum producers) on
     rotated weights. Every s4 producer quantises x H: Triton _a4_pack_store -> _had3_pack_store, c32_prod and
-    c32c_csum -> their generated *_h.cu copies (scripts/acc_c32_mkhad.py), the GDN fold -> ATDEV_GDN_SRC
+    c32c_csum -> their generated *_h.cu copies, the GDN fold -> ATDEV_GDN_SRC
     gdn_ss12h/15h.cu (checked here); int8 producers (non-a4 M) -> bf16 producer output + had_rot + per-token
     int8; remaining bf16 / quant_a4 paths -> the had2 mp_linear wrapper."""
     import triton  # noqa: F401

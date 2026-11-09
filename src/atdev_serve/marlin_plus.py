@@ -4,7 +4,7 @@ and a fused activation-quant prologue (ATDEV_OPT=marlin_plus).
 Why: at c=32 (MTP k=1, M=64) the W4A8 Marlin GEMMs are 53% of the step at
 0.56-0.95 TB/s, and every linear pays two extra launches (Triton per-token
 int8 quant + Inductor `a_s * input_global_scale`, ~5 us). An earlier Triton
-replacement lost 2-3x (LEDGER A7-w4, W48-mb); this keeps Marlin's inner loop
+replacement lost 2-3x (measured); this keeps Marlin's inner loop
 (int4->int8 lop3 dequant, mma.sync, striped split-K) and changes only:
 
 1. launch config per (shape, M-bucket): thread tile (k, n, threads), pipeline
@@ -17,7 +17,7 @@ replacement lost 2-3x (LEDGER A7-w4, W48-mb); this keeps Marlin's inner loop
 Weights/scales are exactly vLLM's Marlin tensors (no extra memory). Kernel
 source: src/atdev_serve/csrc/marlin_plus (vLLM v0.31.0 csrc, Apache-2.0),
 built by marlin_plus_build.py. Per-shape configs: ATDEV_MP_CONFIG json
-(scripts/bench_marlin_plus.py output -> scripts/mp_make_config.py); shapes/M
+(offline sweep); shapes/M
 not in the table run stock vLLM Marlin.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ FQ_MAX_K = 17408
 U8 = os.environ.get("ATDEV_MS_U8", "0") == "1"
 
 # PFX-s9: large-M (prefill, M > 128) W4A8 GEMMs through marlin_plus with a tuned launch config instead of stock vLLM
-# Marlin (stages 8 vs 4: -11% GEMM time at M=4096, results/PFX-s9/mp_sweep4096.json). Opt-in ATDEV_PF_MP=1;
+# Marlin (stages 8 vs 4: -11% GEMM time at M=4096). Opt-in ATDEV_PF_MP=1;
 # ATDEV_PF_MP_CFG="tk,tn,threads,stages,bps,max_tmb" overrides. Same kernel code, so outputs are expected bit-identical.
 PF_MP = os.environ.get("ATDEV_PF_MP", "0") == "1"
 PF_CFG = [int(v) for v in os.environ.get("ATDEV_PF_MP_CFG", "64,256,256,8,1,4").split(",")]

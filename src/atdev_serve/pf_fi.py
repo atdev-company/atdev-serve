@@ -3,7 +3,7 @@
 Why: the vllm_flash_attn paged split-KV kernel (what pf_fa2 calls) is badly under-filled for small prefill chunks
 (~450-token deltas over 8k context + decode rows: 2.8 ms per layer per call in the C32 v4 profile, ~20 % of the GPU time
 of the delta phase). FlashInfer's balanced split-KV with ONE plan per step (shared by all 16 full-attention layers):
-microbench results/C32MT/bench_attn_multi.log: 3.30 -> 1.28 ms (1 delta + 20 decode rows), 3.69 -> 1.59, 4.79 -> 2.53,
+microbench: 3.30 -> 1.28 ms (1 delta + 20 decode rows), 3.69 -> 1.59, 4.79 -> 2.53,
 3.76 -> 2.29, cold 4096-token chunk 1.55 -> 1.39 ms. Rounding-level difference (max abs 2.4e-4 at bf16).
 
 Mechanism (same pattern as fi_attn.py): ``TritonAttentionMetadataBuilder.build`` plans a FlashInfer wrapper on the host

@@ -1,8 +1,8 @@
 """c=32 W4A4 producers in CUDA (csrc/c32_prod.cu): SiLU.mul->s4 and gate->s4 bit-identical to
 fused_quant's Triton _silu_a4_kernel / _gate_a4_kernel (same fp32 op sequence incl. Triton's
 approx sigmoid, same s4 fragment layout). Used by fused_quant when ATDEV_FQ_A4_CUDA=1 (default
-off); checked by tests/test_c32_prod.py, timed by scripts/bench_c32_a4prod.py (M=96: SiLU 10.15
--> 9.87 us, gate 5.54 -> 4.43 us).
+off); M=96: SiLU 10.15
+-> 9.87 us, gate 5.54 -> 4.43 us.
 
 norm_a4 (residual add + Gemma RMSNorm -> s4) reproduces Triton's variance bit for bit (same
 reduction tree, rstd checked equal) but NOT the bf16 rounding of (rstd*x)*(w+1) on exact fp32
@@ -20,7 +20,7 @@ _EXTS: dict = {}
 
 
 def ext(mk: bool | None = None):
-    """mk None: the deployed variant (ATDEV_C32_MK); True/False: that variant (c32hmk_check shadow runs)"""
+    """mk None: the deployed variant (ATDEV_C32_MK); True/False: that variant (the other variant)"""
     mk = mk_on() if mk is None else mk
     e = _EXTS.get(mk)
     if e is None:
@@ -34,9 +34,9 @@ def ext(mk: bool | None = None):
 
 
 def mk_on() -> bool:
-    """ATDEV_C32_MK=1 (LEDGER C32hmk-*): every s4 producer (act_a4, csum_norm_a4, Triton _a4_pack_store) uses
+    """ATDEV_C32_MK=1: every s4 producer (act_a4, csum_norm_a4, Triton _a4_pack_store) uses
     q = rint(fma(fma(-sc, y*rc, y), rc, y*rc)), rc = RN(1/sc) instead of div.rn(y, sc) (+ ex2.approx.ftz in
-    the sigmoid) -- nibbles / bits proven equal for every bf16 input (scripts/c32hmk_exhaust.cu)."""
+    the sigmoid) -- nibbles / bits proven equal for every bf16 input."""
     return os.environ.get("ATDEV_C32_MK", "0") == "1"
 
 
