@@ -69,6 +69,8 @@ OPTIMIZATIONS: dict[str, str] = {
     "pf_fa2": "atdev_serve.pf_fa2:register",
     # c=32 multi-turn: FlashInfer fa2 paged attention for the prefill rows of prefill / mixed steps (ATDEV_PF_FI=1 adds it)
     "pf_fi": "atdev_serve.pf_fi:register",
+    # I4I8: INT4 target, M >= ATDEV_I4_MIN_M prefill GEMMs through persistent int8 (or bf16 dequant + cuBLAS)
+    "i4_i8": "atdev_serve.i4_i8:register",
 }
 
 
@@ -78,6 +80,8 @@ def enabled() -> set[str]:
         opts.add("pf_fa2")
     if os.environ.get("ATDEV_PF_FI", "0") == "1":
         opts.add("pf_fi")
+    if os.environ.get("ATDEV_I4_I8", "0") == "1":
+        opts.add("i4_i8")
     return opts
 
 

@@ -79,7 +79,8 @@ if [[ "$PROFILE" == multiturn ]]; then
   export VLLM_USE_V2_MODEL_RUNNER=${VLLM_USE_V2_MODEL_RUNNER:-1}
   export ATDEV_DFT_APC=1                               # tree verification under prefix caching (needs --mamba-cache-mode align)
   export ATDEV_PF_FUSE=1                               # Triton kernels for the prefill-side epilogues of the W3 GEMMs
-  [[ "$C1_MODE" == fast ]] && export ATDEV_PF_GLUE=1   # prefill SiLU*mul / residual-RMSNorm fused with the int8 activation quantization (W3 stack only)
+  export ATDEV_PF_GLUE=1                               # prefill SiLU*mul / residual-RMSNorm fused with the int8 activation quantization
+  [[ "$C1_MODE" != fast ]] && export ATDEV_I4_I8=1     # c1m-accuracy (no W3): prefill GEMMs of the INT4 target through a persistent int8 copy (+24 GB GPU memory)
   export ATDEV_PF_FA2=1                                # prefill attention: FlashAttention-2 for q >= 32 (rounding-level difference to TRITON_ATTN)
   export ATDEV_PF_FA2_GATHER=1                         #   ... with gathered KV for long single-request chunks
   export ATDEV_PF_FA2_FI=1                             #   ... FlashInfer split-KV for short tails (q 2..299) at long context

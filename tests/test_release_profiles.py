@@ -122,7 +122,7 @@ class Profiles(unittest.TestCase):
         extra,pe=self.launch('serve.sh','c1m','--port','9999',NO_WARMUP='1');self.assertEqual(extra.returncode,0,extra.stderr)
         self.assertIn('9999',pe['argv'])
 
-    W3_ONLY=('ATDEV_PF_GLUE','ATDEV_W3_DQ','ATDEV_W3_DQ_MIN_M','ATDEV_W3_I8','ATDEV_W3_I8_MIN_M','ATDEV_W3_SIDECAR')
+    W3_ONLY=('ATDEV_W3_DQ','ATDEV_W3_DQ_MIN_M','ATDEV_W3_I8','ATDEV_W3_I8_MIN_M','ATDEV_W3_SIDECAR')
 
     def test_existing_launches_are_unchanged_against_the_golden_env_and_argv(self):
         golden=json.loads((ROOT/'tests'/'golden_launch_env.json').read_text().replace('{ROOT}',str(ROOT).replace('\\','/')))
@@ -138,16 +138,20 @@ class Profiles(unittest.TestCase):
         self.assertIn('c1-accuracy',run.stderr);self.assertIn('multiturn',run.stderr)
         self.assertEqual(acc['argv'],mt['argv'])
         expected={k:v for k,v in mt['env'].items() if k not in self.W3_ONLY}
+        expected['ATDEV_I4_I8']='1'  # c1m-accuracy only: int8 prefill copy of the INT4 target (ATDEV_PF_GLUE=1 is shared with c1m)
         expected['ATDEV_OPT']=','.join(x for x in FAST.split(',') if x!='w3_mixed')
         self.assertEqual(acc['env'],expected)
         for k in self.W3_ONLY:self.assertNotIn(k,acc['env'],k)
         self.assertNotIn('w3_mixed',acc['env']['ATDEV_OPT'])
         for k in ('ATDEV_DFT_APC','ATDEV_PF_FUSE','ATDEV_PF_FA2','ATDEV_SWA_FINE','ATDEV_TOK_CACHE','ATDEV_GDN_SMALL','ATDEV_TREE_HSPL'):self.assertIn(k,acc['env'],k)
+        self.assertEqual((acc['env']['ATDEV_I4_I8'],acc['env']['ATDEV_PF_GLUE']),('1','1'))
+        for name,args in (('c1m',('serve.sh','c1m')),('c1s',('serve.sh','c1s')),('c1s-accuracy',('serve.sh','c1s-accuracy')),('c32m',('serve.sh','c32m')),('c32s',('serve.sh','c32s'))):
+            r,p=self.launch(*args,NO_WARMUP='1',HADW='/tmp/h.safetensors');self.assertEqual(r.returncode,0,r.stderr);self.assertNotIn('ATDEV_I4_I8',p['env'],name)
         a=acc['argv'];self.assertIn('--enable-prefix-caching',a);self.assertEqual(a[a.index('--max-model-len')+1],'131072')
         direct,pd=self.launch('serve_c1.sh','--profile','multiturn',C1_MODE='accuracy',NO_WARMUP='1');self.assertEqual(pd['env'],acc['env']);self.assertEqual(pd['argv'],acc['argv'])
         s1,single=self.launch('serve.sh','c1s',NO_WARMUP='1');s2,sacc=self.launch('serve.sh','c1s-accuracy',NO_WARMUP='1')
         self.assertEqual(sacc['argv'],single['argv'])
-        for k in self.W3_ONLY:self.assertNotIn(k,sacc['env'],k)
+        for k in self.W3_ONLY+('ATDEV_PF_GLUE',):self.assertNotIn(k,sacc['env'],k)
 
     DOCKER={'c1m':'c1m','c1':'c1m','c1s':'c1s','c1-single':'c1s','c1s-accuracy':'acc','c1-accuracy':'acc','c1m-accuracy':'c1m-accuracy','c32m':'c32m','c32':'c32m','c32s':'c32s','c32-single':'c32s'}
 

@@ -18,7 +18,14 @@ _SUPPORTED="0.31.0"
 _kern=fast._kern
 _w=fast._w
 _tn16=fast._tn16
-_unperm_silu=fast._unperm_silu
+_PG=os.environ.get("ATDEV_PF_GLUE","0")=="1" and os.environ.get("ATDEV_I4_I8","0")=="1"
+_I4MIN=int(os.environ.get("ATDEV_I4_MIN_M","64"))
+
+def _unperm_silu(gu):
+    if _PG and gu.shape[0]>=max(_I4MIN,17):
+        from atdev_serve import pf_glue
+        return pf_glue.silu_quant(gu)  # y plus an int8 copy handed to the down projection (i4_i8.i4_linear -> pf_glue.take)
+    return fast._unperm_silu(gu)
 _log_once=fast._log_once
 _side=fast._side
 _ELIG={}
@@ -61,6 +68,11 @@ def e6_cons(a: torch.Tensor, wq: torch.Tensor, ws: torch.Tensor, p: torch.Tensor
         # rstd for a second consumer: the Marlin consumer only exports it on request (want_r)
         return out, r
     r = torch.rsqrt(p.sum(1) / n_norm + eps)
+    if _PG and m >= max(_I4MIN, 17):
+        from atdev_serve import i4_i8, pf_glue, w3_dq
+        if i4_i8.MODE == "i8" and wq.data_ptr() in i4_i8._PTRS:
+            y = w3_dq.i8_linear(None, wq, ws, n, k, pre=pf_glue.rs_quant(a, r), dt=a.dtype)
+            return (_unperm_silu(y) if silu else y), r
     y = _mp((a.float() * r[:, None]).to(torch.bfloat16), wq, ws, n, k)
     return (_unperm_silu(y) if silu else y), r
 
@@ -231,6 +243,9 @@ def _permute_gate_up(model):
         if n%128 or cfg is None or cfg[1]!=128:continue
         q2,s2=cn.permute_gu_marlin(wq,ws,n)
         wq.data.copy_(q2);ws.data.copy_(s2);gu._atdev_gu_perm=True;count+=1
+        if os.environ.get('ATDEV_I4_I8','0')=='1':  # I4I8: the int8 copy was built from the un-permuted weights
+            from atdev_serve import i4_i8
+            i4_i8.rebuild(wq,ws,n,k)
     return count
 
 
