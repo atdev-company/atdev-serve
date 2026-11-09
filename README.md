@@ -41,14 +41,14 @@ vLLM server.
 
 Use the profile tuned for your workload. Name = `c` + number of concurrent clients + `m` (multi-turn) or `s` (single-turn).
 
-| Profile | Best for | vs best stock vLLM | Run |
+| Profile | Best for | vs bf16 on stock vLLM | Run |
 |---|---|---|---|
-| **c1m** | One user: coding agent, long chat, document Q&A | **3.77x** | `./serve.sh c1m` |
-| **c1s** | One user: one-shot calls, short unrelated prompts | **2.08x** | `./serve.sh c1s` |
-| **c32m** | 32 users: team assistant, agent fleet | **1.58x** | `./serve.sh c32m` |
-| **c32s** | 32 users: batch jobs, API of independent requests | **1.53x** | `./serve.sh c32s` |
+| **c1m** | One user: coding agent, long chat, document Q&A | **9.0x** | `./serve.sh c1m` |
+| **c1s** | One user: one-shot calls, short unrelated prompts | **14.2x** | `./serve.sh c1s` |
+| **c32m** | 32 users: team assistant, agent fleet | **5.45x** | `./serve.sh c32m` |
+| **c32s** | 32 users: batch jobs, API of independent requests | **4.0x** | `./serve.sh c32s` |
 
-Multi-turn multiples are at `max_tokens` 2048. Not sure and one user? Use `c1m`. Full details: [profile comparison](#profile-comparison).
+Largest measured multiples: c1m at `max_tokens` 2048, c32m at `max_tokens` 128. Not sure and one user? Use `c1m`. Full details: [profile comparison](#profile-comparison).
 
 ## Install
 
