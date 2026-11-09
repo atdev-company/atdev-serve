@@ -6,7 +6,7 @@
 
 **Four profiles, each tuned for its use case.** One user or 32, multi-turn or single-turn: run the build made for your workload with `./serve.sh c1m | c1s | c32m | c32s` ([which one?](#the-four-profiles)).
 
-**Multi-turn and agent workloads (new)**
+**Multi-turn and agent workloads (new; on GitHub since 2026-11-09)**
 
 - **9.0x faster than the original bf16 model on stock vLLM at c1m:** the same agent trace (2 sessions x 38 turns, context growing to 111k tokens) takes **301.2 s** against 2,716.3 s (`max_tokens` 2048; 7.3x at 512, 5.1x at 128). Condition: bf16 is a single run of stock vLLM 0.31.0 (MTP k=3, prefix caching on) on the other A100 of the same machine; c1m is the median of 3 cold runs; full stack (W3 overlay + re-trained drafter).
 - **5.45x faster than the original bf16 model on stock vLLM at c32m:** 32 sessions x 7 turns (2k to 10.5k tokens) finish in **73.4 s** against 399.8 s at `max_tokens` 128 (4.8x at 512, 3.9x at 2048). Condition: bf16 is a single run whose smaller KV cache (185,586 tokens) gave a 0% prefix-cache hit rate, which is part of why the gap is large; c32m is the median of 3 cold runs; full stack (rotated W4A4 weights).
@@ -16,7 +16,7 @@
 - **Less energy per token:** at `max_tokens` 2048 the c1m run used 133 kJ against 405 kJ for stock vLLM (2.22 vs 6.10 J per output token, 0.33x); c32m used 76.5 kJ against 121.4 kJ (0.35 vs 0.54 J/token, 0.63x). NVML, same GPU.
 - **Output-identical consolidation:** the release tree reproduces the frozen research run of c1m token for token (all 76 turns identical at `max_tokens` 128 and 512) at the same speed (115.0 / 204.4 s against 116.0 / 205.2 s).
 
-**Single-turn, unchanged and still first-class**
+**Single-turn, unchanged and still first-class (on GitHub since 2026-10-30; current c32s since 2026-11-04)**
 
 - **14.2x** faster single-user decoding with **c1s** than the original bf16 model on stock vLLM (28.9 to **408.9 tok/s**, 96 prompts, up to 1,024 output tokens), **2.08x** the best stock-vLLM configuration we found (196.5 tok/s).
 - **4.0x** the throughput of bf16 on stock vLLM at 32 concurrent requests with **c32s**, **1.53x** the best vLLM settings (**2,688.1 aggregate tok/s**, single measured run).
