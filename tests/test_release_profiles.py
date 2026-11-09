@@ -112,4 +112,16 @@ class Profiles(unittest.TestCase):
         self.assertNotIn('atdev_serve.w3_mixed',called)
         self.assertIn('atdev_serve.drafter_w4',called)
 
+    def test_serve_sh_names_resolve_to_the_same_env_and_argv_as_the_direct_launchers(self):
+        pairs=(('c1m',('serve_c1.sh','--profile','multiturn')),('c1s',('serve_c1.sh','--profile','single')),
+               ('c32m',('serve_c32.sh','--profile','multiturn')),('c32s',('serve_c32.sh','--profile','single')))
+        for name,direct in pairs:
+            a,pa=self.launch('serve.sh',name,NO_WARMUP='1',HADW='/tmp/h.safetensors');b,pb=self.launch(*direct,NO_WARMUP='1',HADW='/tmp/h.safetensors')
+            self.assertEqual(a.returncode,0,a.stderr);self.assertEqual(b.returncode,0,b.stderr);self.assertEqual(pa,pb,name)
+        bad,_=self.launch('serve.sh','c2m');self.assertEqual(bad.returncode,2)
+        nameless,_=self.launch('serve.sh');self.assertEqual(nameless.returncode,2)
+        extra,pe=self.launch('serve.sh','c1m','--port','9999',NO_WARMUP='1');self.assertEqual(extra.returncode,0,extra.stderr)
+        self.assertIn('9999',pe['argv'])
+
+
 if __name__=='__main__':unittest.main()

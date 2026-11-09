@@ -1,160 +1,254 @@
 # atdev-serve
 
-## Up to 14.2× faster Qwen3.8-27B inference on a single A100, passing our accuracy gates
+## Qwen3.8-27B on one A100 80GB: faster agents, faster chat, lower energy per token
 
-> **Easy setup on vLLM — let your AI coding agent handle it.**
+> **Easy setup on vLLM: let your AI coding agent handle it.**
 > atdev-serve installs alongside unmodified **vLLM 0.31.0** and serves the familiar OpenAI-compatible API.
-> **[Open the AI installation & setup guide](https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md)** — give this link to your AI coding agent and ask it to install, launch your chosen C1/C32 profile, and verify the server on your GPU machine.
+> **[Open the AI installation & setup guide](https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md)**: give this link to your AI coding agent and ask it to install, launch your chosen profile, and verify the server on your GPU machine.
 > You can also follow the guide yourself. **Requires a supported NVIDIA GPU and CUDA environment**; the published profiles target an A100 80GB.
 
+**Multi-turn and agent workloads (new)**
 
-- **14.2×** faster single-user decoding with **C1 fast (W3)** than the original bf16 model on stock vLLM (28.9 → **408.9 tok/s**)
-- **2.08×** faster than the best stock-vLLM configuration we could find (196.5 → 408.9 tok/s)
-- **4.0×** more throughput at 32 concurrent requests with **C32 Hadamard W4A4** than bf16 on stock vLLM, and **1.53×** more than the best vLLM settings (→ **2,688.1 tok/s**, single measured run)
-- **Up to 3.8x faster multi-turn and agent workloads** (growing conversations, prefix caching, up to 111k-token context) than the best stock-vLLM setting at C1, and 1.5-1.7x at C32 ([details](docs/MULTITURN.md))
-- Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API
-- 🤗 Model files on Hugging Face: [atdev-company/Qwen3.8-27B-atdev-c1](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) (W3 overlay + DFlash2 drafter); [C32 Hadamard weights](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c32), downloaded automatically as needed
+- **3.77x faster agent conversations at c1m:** a scripted agent session (2 sessions x 38 turns, context growing to 111k tokens) finishes in **301.2 s** instead of 1,136.3 s on the fastest stock vLLM 0.31.0 setting we found. Condition: `max_tokens` 2048 per turn, cold start, median of 3 runs, same A100, full stack (W3 overlay + re-trained drafter). 2.32x at `max_tokens` 128 and 3.04x at 512.
+- **1.58x faster for 32 concurrent multi-turn sessions at c32m:** 199.1 s instead of 314.0 s (32 sessions x 7 turns, 2k to 10.5k tokens, `max_tokens` 2048, median of 3 cold runs, same GPU), 1,096 aggregate output tok/s. Full stack: rotated W4A4 weights.
+- **Long context on one GPU:** c1m serves a 131,072-token window (the trace above reaches 111k tokens) with prefix caching, so each turn prefills only what is new (cache hit rate 0.95).
+- **Less energy per token:** at `max_tokens` 2048 the c1m run used 133 kJ against 405 kJ for stock vLLM (2.22 vs 6.10 J per output token, 0.33x); c32m used 76.5 kJ against 121.4 kJ (0.35 vs 0.54 J/token, 0.63x). NVML, same GPU.
+- **Output-identical consolidation:** the release tree reproduces the frozen research run of c1m token for token (all 76 turns identical at `max_tokens` 128 and 512) at the same speed (115.0 / 204.4 s against 116.0 / 205.2 s).
+- **One launcher:** `./serve.sh c1m | c1s | c32m | c32s`.
 
-In this README, **c=N means N concurrent clients**: c=1 is 1 client (a single user, one request at a time), c=32 is 32 concurrent clients (32 requests in flight).
+**Single-turn, unchanged and still first-class**
+
+- **14.2x** faster single-user decoding with **c1s** than the original bf16 model on stock vLLM (28.9 to **408.9 tok/s**, 96 prompts, up to 1,024 output tokens), **2.08x** the best stock-vLLM configuration we found (196.5 tok/s).
+- **4.0x** the throughput of bf16 on stock vLLM at 32 concurrent requests with **c32s**, **1.53x** the best vLLM settings (**2,688.1 aggregate tok/s**, single measured run).
+- Drop-in plugin for unmodified `vllm==0.31.0`: same OpenAI-compatible server and API.
+- Model files on Hugging Face: [atdev-company/Qwen3.8-27B-atdev-c1](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) (c1m / c1s: W3 overlay + DFlash2 drafter); [atdev-company/Qwen3.8-27B-atdev-c32](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c32) (c32m / c32s: Hadamard weights), downloaded automatically as needed.
+
+Every speedup above is a **full-stack** number (engine plus model-side changes: 3-bit weights, a re-trained drafter, W4A4 activations on rotated weights). The only **engine-only** numbers
+(same model files as vLLM) are the single-turn ones: **1.45x** at c=1 and **1.22x** at c=32; no engine-only multi-turn number has been measured. See [Results](#results-at-a-glance) for conditions.
 
 > **More models coming.** We are optimizing other widely used open models in the same way and will release them here and on [Hugging Face](https://huggingface.co/atdev-company) as they are ready. Watch or star this repository to get notified.
 
 atdev-serve installs next to an unmodified `pip install vllm==0.31.0` and hooks in through vLLM's
-plugin entry point. It adds custom CUDA kernels, tree-based speculative decoding, fusions and
-scheduling. You pick a configuration with one launch script and talk to the usual OpenAI-compatible
+plugin entry point. It adds custom CUDA kernels, tree-based speculative decoding, fusions,
+prefix caching for hybrid models and scheduling. You pick a configuration with one launch script and talk to the usual OpenAI-compatible
 vLLM server.
-
-> **Using an AI coding agent?** Give it the path or URL of [`AI_SETUP.md`](AI_SETUP.md)
-> (`https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md`). That file contains
-> everything the agent needs to install, launch and verify the server on its own.
 
 > **Built by [ATDEV](https://www.atdev.co.kr).** We tune LLM inference for your model on your GPUs:
 > custom kernels, speculative decoding, quantization and serving-stack tuning. See
 > [Work with ATDEV](#work-with-atdev) or write to [atdev@atdev.co.kr](mailto:atdev@atdev.co.kr).
 
+## The four profiles
+
+**Naming rule.** `c` = concurrent clients, and the number is how many the profile is tuned for (`c1`: one client, `c32`: 32 clients at once).
+The last letter is the workload: **`m` = multi-turn** (conversations that grow; the server keeps their state in a prefix cache and prefills only what is new) and
+**`s` = single-turn** (independent requests; no prefix cache, smaller memory footprint). In this README, c=N means N concurrent clients.
+
+| Profile | Clients | Workload | Launch | Context | What it gives you |
+|---|---|---|---|---|---|
+| **c1m** | 1 | multi-turn: coding agent, long chat, document Q&A | `./serve.sh c1m` | 131,072 | 3.77x faster than the best stock vLLM on a 111k-token agent trace (`max_tokens` 2048); 394.4 tok/s single-request decode |
+| **c1s** | 1 | single-turn: one-shot calls, short unrelated prompts | `./serve.sh c1s` | 8,192 (262,144 tested) | 408.9 tok/s decode, 2.08x the best stock vLLM; the largest KV cache |
+| **c32m** | 32 | multi-turn: shared team assistant, agent fleet with growing histories | `./serve.sh c32m` | 16,384 | 1.58x faster than the best stock vLLM on 32 concurrent 7-turn sessions (`max_tokens` 2048) |
+| **c32s** | 32 | single-turn: batch jobs, API traffic of independent requests | `./serve.sh c32s` | 8,192 (262,144 tested) | 2,688.1 aggregate tok/s, 1.53x the best stock vLLM |
+
+`./serve.sh <name> [extra vllm serve args]` only chooses the existing launcher and its `--profile`; the older commands still work
+(`./serve_c1.sh --profile single|multiturn`, `./serve_c32.sh --profile single|multiturn`, `./serve_c1_accuracy.sh`). A second c1s flavor, **c1s accuracy** (`./serve_c1_accuracy.sh`),
+switches off the 3-bit overlay for better measured accuracy at 357.2 tok/s.
+
+**Which one do I pick?**
+
+| If you... | Run |
+|---|---|
+| use a coding agent or a long chat that keeps adding to one conversation | `c1m` |
+| make independent one-shot calls with short, unrelated prompts | `c1s` |
+| serve a team or a fleet of agents whose conversations grow | `c32m` |
+| run batch jobs or serve an API of independent requests | `c32s` |
+| are not sure and have one user | `c1m` (it costs 3.6% on short unrelated prompts and is much faster whenever a prefix repeats) |
+
+Details and the reasoning are in [AI_SETUP.md](AI_SETUP.md) and the [profile comparison](#profile-comparison).
+
 ## Results at a glance
 
-Qwen3.8-27B on 1x A100 80GB, vLLM 0.31.0, greedy decoding, 96 fixed prompts (coding, agentic,
-general, math; 39 in Korean), up to 1024 output tokens each.
+Qwen3.8-27B on 1x A100 80GB, vLLM 0.31.0, greedy decoding, thinking off. Multi-turn charts show the wall time of a scripted conversation (lower is better, `max_tokens` 2048,
+the longest output cap, where the gain is largest); single-turn charts show the 96-prompt benchmark (coding, agentic, general, math; 39 in Korean; up to 1,024 output tokens).
 
-| | **c=1: 1 client** (single user, one request at a time)<br>decode tok/s per request | **c=32: 32 concurrent clients** (32 requests in flight)<br>aggregate output tok/s |
+### c1m: 1 client, multi-turn
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/speed_c1m-dark.svg">
+  <img alt="c1m: whole-trace wall time at max_tokens 2048: bf16 stock vLLM 2716.3 s, fastest stock INT4 1136.3 s, atdev-serve c1m 301.2 s (3.77x faster)" src="docs/img/speed_c1m.svg">
+</picture>
+
+### c32m: 32 clients, multi-turn
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/speed_c32m-dark.svg">
+  <img alt="c32m: whole-trace wall time at max_tokens 2048: bf16 stock vLLM 771.8 s, fastest stock INT4 314.0 s, atdev-serve c32m 199.1 s (1.58x faster)" src="docs/img/speed_c32m.svg">
+</picture>
+
+The c32m headline is the final c32m bundle's 3-repetition run on trace v5-c32 (median 199.1 s; its three repetitions were 193.1, 199.1 and 199.5 s, mean 197.2 s, which is 1.59x). We quote the median everywhere in this repository so every table uses one rule.
+The fastest stock setting at `max_tokens` 2048 is INT4 with int8 activations, MTP k=3 and `TRITON_ATTN` (median 314.0 s).
+
+### c1s: 1 client, single-turn
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/speed_c1s-dark.svg">
+  <img alt="c1s: decode tok/s per request: bf16 default 28.9, INT4 default 74.9, best vLLM 196.5, atdev engine only 284.4, atdev c1s full stack 408.9" src="docs/img/speed_c1s.svg">
+</picture>
+
+### c32s: 32 clients, single-turn
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/speed_c32s-dark.svg">
+  <img alt="c32s: aggregate output tok/s: bf16 default 671.8, INT4 default 1264.7, best vLLM 1757.1, atdev engine only 2135.7, atdev c32s full stack 2688.1" src="docs/img/speed_c32s.svg">
+</picture>
+
+| | **c=1: 1 client**<br/>decode tok/s per request | **c=32: 32 concurrent clients**<br/>aggregate output tok/s |
 |---|---:|---:|
 | Original bf16 model, vLLM defaults | 28.9 | 671.8 |
 | INT4 checkpoint (RedHatAI), vLLM defaults | 74.9 | 1,264.7 |
 | INT4 + **best vLLM settings** we found | 196.5 | 1,757.1 |
 | **atdev-serve, engine only** (same model files as vLLM) | 284.4 (**1.45x** vs best vLLM) | 2,135.7 (**1.22x**) |
-| **atdev-serve, released full stacks** (C1 fast / C32 Hadamard W4A4) | **408.9** (**2.08x**) | **2,688.1** (**1.53x**) |
-| atdev-serve, C1 accuracy (W3 disabled) | 357.17 (**1.82x**) | — |
-| released full stacks vs original bf16 + vLLM defaults | **14.2x** (C1 fast) | **4.0x** |
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c1-dark.svg">
-  <img alt="c=1 ladder (1 client, one request at a time): bf16 default 28.9, INT4 default 74.9, best vLLM 196.5, atdev engine only 284.4, atdev full stack 408.9 tok/s" src="docs/img/ladder_c1.svg">
-</picture>
-**Historical C32 chart:** the unrotated 2,730.9 tok/s configuration below is not the shipped C32 profile. The current Hadamard W4A4 measurement is 2,688.1 tok/s.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/ladder_c32-dark.svg">
-  <img alt="c=32 ladder (32 concurrent clients): bf16 default 671.8, INT4 default 1264.7, best vLLM 1757.1, atdev engine only 2135.7, atdev full stack 2,730.9 tok/s" src="docs/img/ladder_c32.svg">
-</picture>
+| **atdev-serve, full stack** (c1s / c32s) | **408.9** (**2.08x**) | **2,688.1** (**1.53x**) |
+| atdev-serve c1s accuracy (W3 disabled) | 357.17 (**1.82x**) | n/a |
+| full stack vs original bf16 + vLLM defaults | **14.2x** | **4.0x** |
 
 Two kinds of results are reported separately:
 
-* **Engine only.** atdev-serve uses the **same model files** as the vLLM baseline (RedHatAI INT4
-  target, stock `z-lab/Qwen3.8-27B-DFlash2` drafter or the built-in MTP head) and the same vLLM
-  flags. Only engine work is added: kernels, fusions, the tree-verification algorithm, scheduling and
-  metadata.
-* **Full stack.** The engine plus **model-side changes** that a vLLM user could also make on their
-  own: 3-bit weights, a re-trained drafter, W4A4 activations, low-bit verify-head parts. These change
-  model files or numerics. Accuracy gates cover them (see [Accuracy](#accuracy)).
+* **Engine only.** atdev-serve uses the **same model files** as the vLLM baseline (RedHatAI INT4 target, stock `z-lab/Qwen3.8-27B-DFlash2` drafter or the built-in MTP head) and the same vLLM
+  flags. Only engine work is added: kernels, fusions, the tree-verification algorithm, scheduling and metadata. Measured for single-turn only.
+* **Full stack.** The engine plus **model-side changes**: 3-bit weights, a re-trained drafter, W4A4 activations on Hadamard-rotated weights, low-bit verify-head parts. These change
+  model files or numerics. Accuracy gates cover them (see [Accuracy and validation](#accuracy-and-validation)). **All multi-turn numbers are full stack.**
 
-The original **GSM8K/long-context development gates** below pass: GSM8K stays within 1 point of its matching stock-vLLM reference and long-context retrieval is 36/36. These narrow gates do not establish unchanged broad accuracy; see [all per-profile scores and known gaps](docs/ACCURACY.md). Details and the measurement method are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+### Speed by output length (`max_tokens`)
 
-## Multi-turn and agent workloads
+Wall-clock seconds for the whole scripted conversation, cold start, median of 3 runs, same GPU for both arms. "Stock" is the fastest stock vLLM 0.31.0 setting we found for that cell, with prefix caching on
+(c1: INT4, default attention backend, no speculative decoding; c32: INT4, int8 activations, MTP k=3, the faster of `TRITON_ATTN` and the default backend). tok/s = generated tokens / wall time, prefill included.
 
-Agents and chat clients resend a growing conversation on every turn. The new **`multiturn`** profiles cache the
-conversation state (attention KV and the recurrent GDN state), prefill only the new part of each turn, and use
-faster prefill kernels for what remains. `./serve_c1.sh` now starts this profile by default
-(`./serve_c1.sh --profile single` is the previous launch); `./serve_c32.sh` is the C32 version (`--profile single` is its previous launch).
+**c1m, trace v5** (2 sessions x 38 turns, context 5k to 111k tokens, GPU1 of our test machine)
 
-Wall-clock time of a scripted agent conversation (2 sessions x 38 turns, context growing from 5k to 111k tokens,
-output capped per turn; cold start, median of 3 runs, same A100 for both arms; stock = the fastest stock vLLM 0.31.0
-setting we found, with prefix caching on):
+| `max_tokens` | stock vLLM | c1m | speedup | c1m tok/s | stock tok/s | original bf16 + vLLM |
+|---|---:|---:|---:|---:|---:|---:|
+| 128 | 268.6 s | **116.0 s** | **2.32x** | 82.2 | 34.7 | 593.4 s |
+| 512 | 623.1 s | **205.2 s** | **3.04x** | 159.4 | 52.0 | 1,497.5 s |
+| 2048 | 1,136.3 s | **301.2 s** | **3.77x** | 198.6 | 58.4 | 2,716.3 s |
 
-| Output cap per turn | stock vLLM | atdev-serve C1 `multiturn` | speedup | original bf16 + vLLM |
+**c32m, trace v5-c32** (32 sessions x 7 turns, 2k to 10.5k tokens)
+
+| `max_tokens` | stock vLLM | c32m | speedup | c32m tok/s | stock tok/s | original bf16 + vLLM |
+|---|---:|---:|---:|---:|---:|---:|
+| 128 | 115.1 s | **73.4 s** | **1.57x** | 386.3 | 245.5 | 399.8 s |
+| 512 | 184.3 s | **117.6 s** | **1.57x** | 857.3 | 543.5 | 569.7 s |
+| 2048 | 314.0 s | **199.1 s** | **1.58x** | 1,096.1 | 719.2 | 771.8 s |
+
+**c32m, older trace v4** (32 sessions x 6 turns, prompts up to about 9k tokens; stock = fastest of FLASH_ATTN / TRITON_ATTN with MTP k=3). The first row set was measured on an earlier, unrotated C32 bundle
+(3 reps, GPU1); the rotated c32m bundle was measured at caps 128 / 512 only (2 reps, GPU0, so the ratios against the GPU1 stock numbers are indicative).
+
+| `max_tokens` | stock vLLM | earlier unrotated bundle | speedup | rotated c32m (GPU0) |
 |---|---:|---:|---:|---:|
-| 128 tokens | 268.6 s (34.7 tok/s) | **116.0 s (82.2 tok/s)** | **2.32x** | 593.4 s |
-| 512 tokens | 623.1 s (52.0 tok/s) | **205.2 s (159.4 tok/s)** | **3.04x** | 1,497.5 s |
-| 2048 tokens | 1,136.3 s (58.4 tok/s) | **301.2 s (198.6 tok/s)** | **3.77x** | 2,716.3 s |
+| 128 | 82.5 s | 54.3 s | 1.52x | 54.4 s (~1.52x) |
+| 512 | 118.1 s | 78.7 s | 1.50x | 78.8 s (~1.50x) |
+| 2048 | 189.2 s | 130.5 s | 1.45x | not measured |
 
-32 concurrent sessions of 7 turns (2k to 10.5k tokens), same method: **1.57x / 1.57x / 1.58x** faster than the
-fastest stock setting at caps 128 / 512 / 2048 (73.4 / 117.6 / 199.1 s against 115.1 / 184.3 / 314.0 s). With the optional end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`) and conversations
-that feed back the server's own replies, C32 reaches 1.50x / 1.58x. For the same agent trace the GPU used 0.49x / 0.40x / 0.33x
-the energy of stock vLLM (C1; C32: 0.63x-0.64x). Tables, method, power and the live-reply numbers are in [docs/MULTITURN.md](docs/MULTITURN.md).
+**Why the c1m gap grows with output length, and why c32m does not.** At c=1 the gap grows from 2.32x to 3.04x to 3.77x because the two phases of a trace speed up by different amounts and the decode share grows with `max_tokens`.
+Splitting the wall time into the summed time-to-first-token (prefill) and the rest (generation): prefill is 84.3 s / 84.5 s / 84.7 s for c1m against 130.4 s / 130.2 s / 131.0 s for stock, a flat **1.55x**, while
+the generation phase is 31.7 / 120.7 / 216.5 s against 138.2 / 492.9 / 1,005.3 s, **4.1x-4.6x**. Prefill is 73% of the c1m run at `max_tokens` 128 and 28% at 2048, so the blend moves from 2.3x toward 4x as outputs get longer.
+This works because stock vLLM here decodes without speculation, while c1m verifies a 16-node token tree per step.
+At c=32 the ratio is flat at about 1.57x-1.58x for all three caps. With 32 sessions in flight, prefill chunks and decode steps share the same GPU steps, so there is no clean prefill/decode split like the one above, and
+**we have not measured why the ratio stays flat**; the stock baseline at c=32 already decodes with MTP speculation and large batches, which narrows the decode-side gap that drives the c1m growth, but that is a hypothesis, not a measurement.
 
-What to know before switching:
+### Power and energy
 
-* **Single-request decode is 3.7% slower** in `multiturn` than in `single` (394.4 vs 409.5 mean decode tok/s on the
-  96-prompt benchmark; still 2.01x best stock vLLM). Use `--profile single` for pure single-shot generation.
-* **Full-stack numbers.** They include the model-side parts (W3 overlay, re-trained drafter, int8 activations in prefill, and for
-  C32 4-bit activations). We have not measured an engine-only multi-turn speedup; the engine-only figures above (1.45x / 1.22x) are single-turn.
-* **bf16 KV cache.** The fast path keeps the KV cache in bf16; an int8 KV-cache kernel exists but is parked
-  (corrupt outputs after a prefix hit). C1 `multiturn` holds 284,569 KV tokens at 131,072 context.
-* **C32 accuracy.** The C32 `multiturn` profile is the Hadamard W4A4 stack (same rotated sidecar as before) with a rotation-aware 4-bit prefill GEMM:
-  MMLU-Pro 71.4, KMMLU 67.6, HumanEval+ 89.0, perplexity 7.37, GSM8K-1319 94.39%, long-context 36/36 (stock INT4: 71.5 / 67.1 / 90.2 / 7.30 / 94.31%).
-  IFEval prompt strict is 81.4 (mean of 3 runs; stock 83.4), 2.0 points below stock, with a run-to-run spread of up to about 4 points. `ATDEV_PF_A4=0` disables the 4-bit prefill GEMM.
-* **Where the numbers come from.** Speed and the broad accuracy scores were measured on our research runtime; this repository's tree was checked against them
-  (C1 outputs identical on 76 of 76 turns, speed within 1%, perplexity and GSM8K-300 reproduced). Details in [docs/MULTITURN.md](docs/MULTITURN.md#where-the-numbers-come-from).
-  C32 `multiturn` is a full-stack result: it uses the rotated Hadamard weights.
-* Only greedy decoding is qualified, and a continuation from cached state is not byte-identical to an uncached one
-  (floating-point rounding at cache-block edges; task accuracy was checked, see [docs/MULTITURN.md](docs/MULTITURN.md)).
-* **Optional end-of-reply checkpoint** (`ATDEV_EOR_CKPT=1`, off by default): reuses the server's own previous reply.
-  C32 live conversations 3-12% faster (measured on the previous C32 bundle); costs 1.3-2.7% where replies cannot be reused and 3% more GPU memory.
+NVML at 1 Hz on the same GPU, energy from the GPU counter, measured during the speed runs above (full tables in [docs/MULTITURN.md](docs/MULTITURN.md#power-and-energy)).
+
+| | `max_tokens` 128 | 512 | 2048 |
+|---|---:|---:|---:|
+| c1m energy per run (stock) | 48.2 kJ (98.1 kJ) | 89.4 kJ (223.5 kJ) | 133.0 kJ (405.0 kJ) |
+| c1m J per output token (stock) | 5.05 (10.5) | 2.73 (6.9) | 2.22 (6.1) |
+| c1m average power (stock) | 415 W (365 W) | 435 W (359 W) | 442 W (356 W) |
+| c32m energy per run (stock) | 32.6 kJ (50.7 kJ) | 48.6 kJ (75.7 kJ) | 76.5 kJ (121.4 kJ) |
+| c32m J per output token (stock) | 1.15 (1.79) | 0.48 (0.76) | 0.35 (0.54) |
+| c32m average power (stock) | 444 W (441 W) | 414 W (409 W) | 387 W (387 W) |
+
+At c=1 atdev-serve draws 15-25% more power than stock because the GPU is busier, but the run is 2.3-3.8x shorter. Peak GPU temperature stayed at 70-73 C and the SM clock at 1410 MHz (a power-cap throttle flag appeared briefly in the c1m runs).
+Single-request decoding (96 prompts): c1m 426-431 W and 1.20 J/token, c1s 437-439 W and 1.18 J/token, stock vLLM 328 W and 1.80 J/token.
+
+### Replies the server generated itself
+
+The traces replay recorded replies. For live conversations, the optional end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`, off by default) reuses the previous reply too: on a 32-session live trace c32m-class stacks gained 3-12% wall time
+(measured on an earlier C32 bundle), at a cost of 1.3-2.7% where replies cannot be reused and about 3% more GPU memory. See [docs/MULTITURN.md](docs/MULTITURN.md#replies-the-server-generated-itself-live-conversations) and [docs/TECHNIQUES.md](docs/TECHNIQUES.md#optional-end-of-reply-checkpoint).
+
+## Accuracy and validation
+
+All scores are greedy, thinking off. They are task measurements on the stated sample sizes, not statistical equivalence or a losslessness guarantee. Broad scores: MMLU-Pro 1,400 items, KMMLU Korean 1,125, IFEval 541 prompts, HumanEval 164, MBPP 378
+(EvalPlus code tests executed), WikiText-2 perplexity over 40,920 tokens.
+
+**Which tree produced which number.** c1s and c32s: the public release tree (broad evals, GSM8K-300/1319, long-context). c1m and c32m: the **research runtime** that the profiles were frozen from (all broad evals, GSM8K-1319, long-context);
+on this repository's tree we re-ran the speed, the generated text (c1m: 76 of 76 turns identical), GSM8K-300 (c1m 0.963, c32m 0.963), c32m perplexity (7.365) and, for the single-turn launches, perplexity and GSM8K-300 (c32s 7.209 / 0.957, c1s 0.963).
+The stock reference of the c1s / c32s columns is the mean of two stock runs; the c1m / c32m columns use one stock run of the same harness, so the two stock columns differ slightly.
+
+| Metric | stock INT4 (mean of 2) | c1s fast | c1s accuracy | c32s | stock INT4 (1 run) | c1m | c32m |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MMLU-Pro | 71.71% | 69.14% | 71.43% | 72.79% | 71.5% | 69.0% | 71.4% |
+| KMMLU Korean | 66.84% | 63.91% | 66.22% | 65.07% | 67.1% | 63.8% | 67.6% |
+| IFEval prompt strict | 82.90% | 82.07% | 82.99% | 82.44% | 83.4% | 81.3% | 81.4% (mean of 3 runs) |
+| IFEval prompt loose | 86.60% | 84.84% | 86.32% | 86.51% | 87.1% | 83.7% | 84.6% (mean of 3) |
+| HumanEval / HumanEval+ | 95.73 / 90.85% | 94.51 / 88.41% | 95.73 / 91.46% | 95.12 / 89.63% | 95.1 / 90.2% | 95.1 / 90.2% | 94.5 / 89.0% |
+| MBPP / MBPP+ | 91.27 / 76.46% | 89.68 / 75.66% | 92.06 / 76.98% | 92.06 / 78.04% | 91.5 / 76.7% | 88.1 / 75.4% | 89.4 / 75.9% |
+| WikiText-2 perplexity | 7.299 | 8.220 | 7.300 | 7.209 | 7.299 | 8.282 | 7.365 |
+| GSM8K, all 1319 | 94.31% | 95.00% | 94.77% | 94.69% | 94.31% | 94.24% | 94.39% |
+| GSM8K, first 300 | n/a | 96.67% | 97.00% | n/a | n/a | 96.67% (96.33% re-run on this tree) | 97.0% / 95.3% (shared / unique prefix); 96.33% re-run on this tree |
+| long-context retrieval (36 items) | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 |
+
+**Gap to stock, per profile**
+
+* **c1m and c1s fast keep the 3-bit overlay's gap:** MMLU-Pro **-2.5** (c1m) / -2.6 (c1s), KMMLU **-3.3** (c1m) / -2.9 (c1s), MBPP -3.4 (c1m); perplexity 8.2-8.3 against 7.3. This is the price of the speed; c1s accuracy (no overlay) is within about 0.3 points of stock on MMLU-Pro and 0.6 on KMMLU, at 357 tok/s.
+  The gap does not come from multi-turn caching: c1m matches c1s fast within the noise of these sample sizes.
+* **c32s and c32m** are in the accuracy class of stock INT4: c32m MMLU-Pro -0.1, KMMLU +0.5, HumanEval+ -1.2, perplexity +0.07; **IFEval prompt strict is 2.0 points below stock** (81.4 against 83.4) and varies by up to about 4 points from run to run.
+* One configuration's Korean-knowledge score varies by about 1.4 points between runs (n=1,125); differences below about 1.5 points need several runs.
+
+The c32m profile and the single-turn Hadamard profile use the same rotated weights; c32m adds a rotation-aware 4-bit prefill GEMM. Without the rotation that GEMM cost perplexity 7.96 and 2-4 points on MMLU-Pro / KMMLU / HumanEval+ (see [docs/TECHNIQUES.md](docs/TECHNIQUES.md)).
+Pass rule of the original gates: GSM8K within 1 point of the matching stock vLLM reference and long-context 36/36. Passing these narrow gates does not establish unchanged broad accuracy.
+Complete tables, sample sizes and limits: [docs/ACCURACY.md](docs/ACCURACY.md) and [docs/MULTITURN.md](docs/MULTITURN.md#accuracy-of-the-multi-turn-profiles).
+Only greedy decoding is qualified; sampling at higher temperatures is not validated in this release.
+
+## Profile comparison
+
+| | **c1m** | **c1s** | **c32m** | **c32s** |
+|---|---|---|---|---|
+| Target workload | one client, conversations that grow (agents, long chat, document Q&A) | one client, independent short requests | 32 clients, growing conversations | 32 clients, independent requests |
+| Prefix caching | yes (align mode, state re-basing) | no | yes | no |
+| Context window (default) | 131,072 | 8,192 (262,144 tested with `--max-model-len`) | 16,384 | 8,192 (262,144 tested) |
+| KV cache at that window | about 284,600 tokens (2.2 full-length requests) | about 542,000 tokens (4.1 full-length requests; measured on the multi-turn build before the int8 prefill weights, indicative) | about 514,800 tokens (31 requests of 16,384; frozen bundle) | not published |
+| GPU memory setting | `--gpu-memory-utilization 0.90` | 0.90 | 0.90 (0.93 with the optional checkpoint) | 0.90 |
+| Weights used | INT4 target + W3 overlay (12.5 GB) + d16 drafter (1.35 GB) | same (c1s accuracy: INT4 + drafter only) | INT4 target + Hadamard sidecar (about 12.5 GB), built-in MTP | same as c32m |
+| Speculation | DFlash2 block 16, 16-node token tree | same | built-in MTP k=3, confidence-scheduled verify | same |
+| Single-request / aggregate speed (96 prompts) | 394.4 tok/s per request | 408.9 tok/s per request | n/a | 2,688.1 aggregate tok/s |
+| Multi-turn speed vs best stock vLLM | 2.32x / 3.04x / 3.77x (`max_tokens` 128 / 512 / 2048) | not designed for it | 1.57x / 1.57x / 1.58x | not designed for it |
+| Start-up | kernel builds on first start (12-16 min on our machine), then about 2 min; JIT warmup runs in the background | same without warmup | same as c1m, 32-way warmup | same as c1s |
+| Optional end-of-reply checkpoint | yes, neutral at c=1 | n/a | yes (3% more memory) | n/a |
+
+Rule of thumb from the measurements: if a prefix repeats, the `m` profile wins by a wide margin (c1m is 2.3x-3.8x faster on long conversations). If every request is independent and short, `s` is 3.7% faster (c1: 409.5 vs 394.4 mean decode tok/s)
+and has more KV room. c1m therefore costs little when it is not needed.
 
 ## Context length
 
-**Up to 262,144 total context tokens (input + output)** are supported by the C1 Fast W3 and C32 Hadamard W4A4 profiles. Each was tested on a **single A100 80GB** with **261,583 input tokens + 21 output tokens = 261,604 total tokens**, correctly retrieving all three codes placed at the beginning, middle and end of a synthetic long input.
-
-Pass `--max-model-len 262144` to the selected launch script (`--profile single`; the 262,144-token record was measured on the single-turn launches, the C1 `multiturn` default is 131,072 and has not been tested beyond that). The default of `single` and the Hadamard `serve_c32.sh` remains 8,192 total context tokens; the published speed benchmarks use an output cap of 1,024 tokens. This record is a single long-request functional test for each profile.
+**c1s and c32s support up to 262,144 total context tokens (input + output).** Each was tested on a single A100 80GB with **261,583 input tokens + 21 output tokens = 261,604 total tokens**, correctly retrieving all three codes placed at the beginning, middle and end of a synthetic long input.
+Pass `--max-model-len 262144` to the launcher (`./serve.sh c1s --max-model-len 262144`). This is a single long-request functional test for each profile; the published speed benchmarks use the default windows and output caps stated with each result.
+**c1m** defaults to 131,072 tokens (its trace reaches 111k) and **c32m** to 16,384; neither was tested beyond its default.
 
 ## Quick start
 
-**Default sampling:** `serve_c1.sh`, `serve_c1_accuracy.sh` and `serve_c32.sh` set the server
-default to **`temperature: 0` (greedy)**. Requests may omit `temperature` to use this default;
-an explicit request value takes precedence. Published speed and accuracy measurements use
-`temperature: 0`; sampling at higher temperatures is not qualified by those results.
-
-### Released profiles: choose speed or accuracy explicitly
-
-| Profile | Launch | Target weights | Extra model files | Measured speed |
-|---|---|---|---|---:|
-| **C1 fast, multiturn (default)** | `./serve_c1.sh` | original W3 overlay on the INT4 checkpoint | existing W3 overlay + existing DFlash2 d16 drafter | **394.4 tok/s** single-request decode (**2.32x-3.77x** on multi-turn traces vs best stock vLLM) |
-| **C1 fast, single** | `./serve_c1.sh --profile single` | same | same | **408.9 tok/s** published headline |
-| **C1 accuracy** | `./serve_c1_accuracy.sh` | stock RedHatAI INT4; W3 disabled | same existing DFlash2 d16 drafter; **no W3 download** | **357.17 tok/s**, two runs |
-| **C32 multiturn (default)** | `./serve_c32.sh` | Hadamard-rotated GPTQ INT4 sidecar; W4A4 verification and a rotation-aware 4-bit prefill GEMM | Hadamard sidecar; built-in MTP, **no external drafter** | **1.57x-1.58x** on 32-session multi-turn traces vs best stock vLLM |
-| **C32 Hadamard W4A4, single** | `./serve_c32.sh --profile single` | same sidecar; no prefix caching, 8,192 context | same | **2,688.13 aggregate tok/s**, one run at c=32 |
-
-The **up to 14.2x / 2.08x maximum-speed claims belong to C1 fast (`--profile single`)**, not C1 accuracy and not the `multiturn` default (which is 3.7% slower on single requests and much faster on multi-turn traces).
-C1 accuracy keeps the drafter, verification head and engine settings, and disables only the W3
-weight overlay/path. It improves the measured broad accuracy and PPL relative to C1 fast, at a
-speed cost; it is not a promise of identical INT4 outputs or perfect scores on every task.
-C32 ships **only the Hadamard W4A4 profile**. The older unrotated C32 result of 2,730.9 tok/s is
-historical; down-projection W4A8 restoration is not a released option.
-
-See [the full per-profile accuracy table](docs/ACCURACY.md), including all measured differences,
-sample sizes, data sources and measurement limits. The original GSM8K/long-context gates below
-are narrower than these broad benchmarks; passing them does not establish lossless accuracy.
-
-
 You need: Linux, an **A100 80GB**, an NVIDIA driver that supports CUDA 13.0, 80 GB of free disk,
-and Hugging Face Hub access. The step-by-step guide is [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+and Hugging Face Hub access. The step-by-step guide is [docs/USER_GUIDE.md](docs/USER_GUIDE.md); the agent-friendly version is [AI_SETUP.md](AI_SETUP.md).
 
 **Option A: Docker** (you do not need to install CUDA on the host)
 
 ```bash
 git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
-docker compose --profile c1 up --build        # single-user stack on port 8100
-# or: docker compose --profile c32 up --build # 32-concurrent-request stack
+docker compose --profile c1 up --build        # c1m: one client, multi-turn (port 8100)
+# or: docker compose --profile c1-single up --build   # c1s
+# or: docker compose --profile c32 up --build         # c32m
+# or: docker compose --profile c32-single up --build  # c32s
 ```
 
 **Option B: Python virtualenv** (needs the CUDA 13.0 toolkit with `nvcc` on the host)
@@ -163,42 +257,61 @@ docker compose --profile c1 up --build        # single-user stack on port 8100
 git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
 ./install.sh                 # checks the machine, creates .venv, installs vllm==0.31.0 + atdev-serve
 source atdev-env.sh          # activates .venv and sets CUDA_HOME for the kernel build
-./serve_c1.sh                # C1 fast, multiturn profile (prefix caching, 131072 context); --profile single for the 408.9 tok/s launch
-# ./serve_c1_accuracy.sh      # C1 accuracy (W3 disabled, same drafter)
-# ./serve_c32.sh              # C32 Hadamard W4A4, multiturn profile (prefix caching for 32 concurrent sessions); --profile single for the previous launch
+./serve.sh c1m               # or c1s, c32m, c32s
+# ./serve_c1_accuracy.sh      # c1s accuracy flavor (W3 disabled, same drafter)
 ```
 
-The first start JIT-compiles the CUDA kernels and downloads the models, so it is slow. Later starts
-reuse the cache. Then send requests:
+**Default sampling:** the launchers set the server default to `temperature: 0` (greedy). Requests may omit `temperature`; an explicit request value takes precedence. Published measurements use `temperature: 0`.
+
+The first start JIT-compiles the CUDA kernels and downloads the models, so it is slow. Later starts reuse the cache. Then send requests:
 
 ```bash
 curl http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"m","messages":[{"role":"user","content":"Hello!"}],"temperature":0,"max_tokens":128}'
 ```
 
-### Which stack should I run?
+For prefix caching to help, send the **same** conversation prefix again (an unchanged system prompt and history, then the new message). Reordering or editing earlier turns invalidates the cached part after the edit.
 
-**Pick in 10 seconds:**
+## Known limits
 
-| If you... | Run |
-|---|---|
-| chat with the model yourself, or use it as a personal or coding assistant | `./serve_c1.sh` |
-| run one agent that calls the model step by step and want each step fast | `./serve_c1.sh` |
-| serve a chatbot or API to many users at the same time | `./serve_c32.sh` |
-| run several agents in parallel, or process many documents in a batch | `./serve_c32.sh` |
-| are not sure | start with `./serve_c1.sh`; switch to `./serve_c32.sh` once you regularly have more than ~4 requests in flight |
+* **A100 80GB only.** All kernels are compiled for sm_80 and tuned for the A100 80GB (SXM). Other GPUs are not supported by this release.
+* **Greedy decoding only.** Sampling at temperature > 0 is not validated.
+* **The `m` profiles are full-stack results.** No engine-only multi-turn measurement exists; outputs are not byte-identical to stock vLLM or to the `s` profiles (3-bit weights, 4-bit activations, FlashAttention-2 / FlashInfer rounding, prefix-cache block edges).
+* **bf16 KV cache.** The fast paths keep the KV cache in bf16; an int8 KV cache was tried and removed (it corrupted output after prefix-cache hits).
+* **c1m memory.** The dequantized prefill weights leave about 284,600 KV tokens at 131,072 context. Windows longer than 131,072 were not tested with `m` profiles (the 262,144-token record is for `c1s` and `c32s`).
+* **Cold, very long prompts.** One fresh 64k-100k prompt is not faster than stock vLLM's default on the earlier multi-turn build (100k tokens: 79.7 s to first token against 46.1 s); not re-measured on the final build. The gains come from repeated history and faster decoding.
+* **Traces are synthetic.** Workloads with fewer repeated prefixes gain less. The trace files are not part of this repository.
+* **c32m accuracy.** IFEval prompt strict is 2.0 points below stock (run-to-run spread up to about 4 points); c1 profiles keep the 3-bit overlay's gap (see above).
+* **Only the `m` profiles pay for caching on short unrelated prompts:** 3.7% slower single-request decode at c=1.
 
-| | `serve_c1.sh` / `serve_c1_accuracy.sh` | `serve_c32.sh` |
-|---|---|---|
-| Best for | one user or a few users, lowest latency per request | many simultaneous users, highest total throughput |
-| Typical use cases | local or personal assistant, coding copilot, a single agent running tool calls one after another, interactive chat where response time matters | chatbot or API service for many users, team-wide assistants, multi-agent systems, batch jobs (summarization, extraction, evaluation) |
-| Speculative decoding | re-trained DFlash2 drafter (block 16) + 16-node token-tree verification | built-in MTP head, k=3, confidence-scheduled variable-length verification |
-| Extra downloads | fast: W3 overlay (12.5 GB) + drafter (1.35 GB); accuracy: drafter only | Hadamard W4A4 sidecar (about 12.5 GB); no external drafter |
-| Measured at | 1 request in flight | 32 requests in flight |
+## FAQ and troubleshooting
 
-Both stacks serve any number of requests. They are just tuned for different loads.
+* **The first start takes a long time.** It JIT-compiles the CUDA kernels (12-16 minutes on our test machine) and downloads the models. Later starts take about 2 minutes. Do not interrupt a build: a server killed mid-build can leave a stale
+  `lock` file in the kernel cache directory (`TORCH_EXTENSIONS_DIR`, default `~/.cache/torch_extensions`) and the next start then waits forever with an idle GPU. Remove it with `find "${TORCH_EXTENSIONS_DIR:-$HOME/.cache/torch_extensions}" -name lock -delete` when no build is running.
+* **My c1m / c32m run is not faster than stock.** Check that the conversation prefix is byte-identical from turn to turn (same system prompt, same earlier messages, new message last) and that the server started with the multi-turn profile (the log says `multiturn`).
+  The metrics endpoint reports prefix-cache hits; independent prompts (no repeated prefix) gain nothing from caching, use `s` for those.
+* **Which profile for one user?** `c1m` if the conversation grows or the prompt is long, `c1s` for independent short prompts (3.7% faster per request, larger KV cache).
+* **The first request is slow.** `c1m` and `c32m` run a warmup in the background after the server is ready; wait for the `atdev warmup: done` log line, or set `NO_WARMUP=1` to skip it.
+* **Can I serve sampled outputs?** Only greedy decoding is qualified. Sampling works through the OpenAI API but is not validated.
+* **Other GPUs, several GPUs?** Only a single A100 80GB is supported by this release.
+* **Do the profiles give the same answers as stock vLLM?** No. Quantized weights, 4-bit activations and different attention kernels change numerics; see [Accuracy and validation](#accuracy-and-validation).
+* More troubleshooting: [docs/USER_GUIDE.md](docs/USER_GUIDE.md#6-troubleshooting) and the failure table in [AI_SETUP.md](AI_SETUP.md).
+
+## Roadmap (measured or in progress, not shipped)
+
+* **c1m without the 3-bit overlay:** measured 250.3 s on the 111k trace at `max_tokens` 512 (2.49x faster than the fastest stock setting at 623.1 s; 1.22x slower than c1m), 2 repetitions, speed only, no accuracy run. Not a released profile.
+* **3-bit recalibration for c1:** in progress; no result yet. Earlier recovery attempts and why they were rejected are in [docs/TECHNIQUES.md](docs/TECHNIQUES.md#tried-and-not-shipped).
+
+## Changelog
+
+* **Multi-turn release: the four profiles.** `serve.sh c1m|c1s|c32m|c32s`; multi-turn profiles `c1m` and `c32m` (prefix caching for the DFlash tree stack and for MTP, FlashAttention-2 / FlashInfer prefill, W3 int8 prefill,
+  rotation-aware 4-bit prefill GEMM, tokenization cache, start-up warmup, optional end-of-reply checkpoint); `c1s` and `c32s` are the previous launches, unchanged in behavior. Fixed a FlashInfer plan-buffer race (CUDA illegal memory access) with a ring of pinned buffers. `hub.py` resolves cached files without network access.
+* **Earlier:** C1 fast / C1 accuracy profiles and the Hadamard W4A4 C32 profile; 262,144-token context record; greedy default presets; tested-environment documentation.
+
 
 ## How it works
+
+This section describes the single-turn stacks; the multi-turn additions are in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#the-multi-turn-profiles) and every technique with its measured effect and failure cases is in [docs/TECHNIQUES.md](docs/TECHNIQUES.md).
 
 One decode step has three parts. A cheap **drafter** guesses several next tokens. The 27B
 **target** model checks all the guesses in one forward pass (verification). Then the engine keeps
@@ -255,32 +368,9 @@ flowchart LR
 More detail, the step-time breakdown and the full milestone history are in
 [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
 
-## Accuracy
+## Single-turn gates and notes
 
-The complete measured broad comparison is in [docs/ACCURACY.md](docs/ACCURACY.md). C1 fast retains its original speed/accuracy tradeoff; the separate C1 accuracy profile disables W3. C32 uses Hadamard W4A4 with a disclosed residual Korean benchmark gap. The table here records the original narrow development gates, with current released profiles distinguished below.
-
-Observed broad accuracy is shown below (percent; PPL lower is better). These are task measurements, not statistical equivalence or a losslessness guarantee. C32 Korean uses the final repeat, 65.07%, rather than its initial 66.04%.
-
-| Metric | Stock INT4 reference | C1 fast: original W3 | C1 accuracy: W3 disabled | C32 Hadamard W4A4 |
-|---|---:|---:|---:|---:|
-| MMLU-Pro (1,400) | 71.71% | 69.14% | 71.43% | 72.79% |
-| KMMLU Korean (1,125) | 66.84% | 63.91% | 66.22% | 65.07% |
-| IFEval prompt strict (541) | 82.90% | 82.07% | 82.99% | 82.44% |
-| IFEval prompt loose (541) | 86.60% | 84.84% | 86.32% | 86.51% |
-| IFEval instruction strict (834) | 87.89% | 87.65% | 88.01% | 88.01% |
-| IFEval instruction loose (834) | 90.89% | 89.69% | 90.77% | 91.01% |
-| HumanEval (164) | 95.73% | 94.51% | 95.73% | 95.12% |
-| HumanEval+ (164) | 90.85% | 88.41% | 91.46% | 89.63% |
-| MBPP (378) | 91.27% | 89.68% | 92.06% | 92.06% |
-| MBPP+ (378) | 76.46% | 75.66% | 76.98% | 78.04% |
-| WikiText-2 PPL, 40,920 tokens (lower is better) | 7.298721 | 8.219982 | 7.300041 | 7.209287 |
-
-The original narrow GSM8K/long-context gates follow.
-
-Greedy decoding, thinking disabled. GSM8K takes the answer from `\boxed{}`.
-Long-context is 36 passkey / multi-key retrieval items at 2k-6.5k tokens.
-"c=1" rows use the settings tuned for 1 client (one request at a time), "c=32" rows the settings tuned
-for 32 concurrent clients.
+The narrow development gates of the single-turn profiles (greedy, thinking off, GSM8K answer from `\boxed{}`, long-context = 36 passkey / multi-key items at 2k-6.5k tokens). "c=1" rows use the settings tuned for 1 client, "c=32" rows the settings tuned for 32 clients.
 
 | configuration | GSM8K (first 300) | GSM8K (all 1319) | long-context |
 |---|---:|---:|---:|
@@ -308,7 +398,7 @@ GPUs are not supported by this release.
 
 ## Reproducing the numbers
 
-This repository contains the C1 fast and accuracy profiles and the C32 Hadamard W4A4 stack. The metric definitions, the
+This repository contains the four profiles c1m, c1s, c32m and c32s (and the c1s accuracy flavor). The metric definitions, the
 exact baseline `vllm serve` commands and how to compare on your own GPU are in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Measure the baseline and atdev in the same session on the
 same GPU.
@@ -334,27 +424,28 @@ PyTorch's CUDA build, the local toolkit and driver compatibility.
 ## Repository layout
 
 ```
+serve.sh                      launcher: ./serve.sh c1m|c1s|c32m|c32s
 serve_c1.sh, serve_c1_accuracy.sh, serve_c32.sh  launch scripts (features + per-stack options as env vars)
 install.sh                    venv installer with preflight checks (--dry-run to preview)
-docker/, docker-compose.yml   container image + compose profiles c1 / c32
+docker/, docker-compose.yml   container image + compose profiles c1 / c1-single / c1-accuracy / c32 / c32-single
 AI_SETUP.md                   end-to-end setup instructions for AI coding agents
 src/atdev_serve/              the vLLM plugin: register.py (entry point), feature modules,
   csrc/                       CUDA sources (JIT-built), incl. vLLM-derived Marlin kernels
   data/token_order.npy        draft-vocabulary frequency order
-docs/                         USER_GUIDE, BENCHMARKS, HOW_IT_WORKS, charts
+docs/                         USER_GUIDE, MULTITURN, TECHNIQUES, ACCURACY, BENCHMARKS, HOW_IT_WORKS, charts
 ```
 
 ## Model files
 
-Here c=1 means the stack tuned for 1 client (`serve_c1.sh`), and c=32 the stack for 32 concurrent clients.
+The c1 repo serves c1m and c1s, the c32 repo c32m and c32s (the repository names are unchanged).
 
 | | used by | license |
 |---|---|---|
 | [`RedHatAI/Qwen3.8-27B-INT4`](https://huggingface.co/RedHatAI/Qwen3.8-27B-INT4) | both stacks (target) | Apache-2.0 |
 | [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) | bf16 baseline rung only | Apache-2.0 |
 | [`z-lab/Qwen3.8-27B-DFlash2`](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) | c=1 (config; weights replaced by the atdev drafter) | Apache-2.0 |
-| [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | C1 fast: `w3/` + `drafter/`; C1 accuracy: the same `drafter/` only | Apache-2.0 |
-| [`atdev-company/Qwen3.8-27B-atdev-c32`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c32) | C32: `hadamard/` GPTQ sidecar only; built-in MTP, no separate drafter | Apache-2.0 model derivatives; calibration-source attribution in the model card |
+| [`atdev-company/Qwen3.8-27B-atdev-c1`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c1) | c1m / c1s: `w3/` + `drafter/`; c1s accuracy: the same `drafter/` only | Apache-2.0 |
+| [`atdev-company/Qwen3.8-27B-atdev-c32`](https://huggingface.co/atdev-company/Qwen3.8-27B-atdev-c32) | c32m / c32s: `hadamard/` GPTQ sidecar only; built-in MTP, no separate drafter | Apache-2.0 model derivatives; calibration-source attribution in the model card |
 
 The existing C1 atdev drafter and W3 calibration used only prompts from
 `HuggingFaceH4/ultrachat_200k` (train_sft) and `openai/gsm8k` (train), with responses generated by

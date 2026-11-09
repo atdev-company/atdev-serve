@@ -28,30 +28,29 @@ The GPU must be free: the server reserves 90% of its memory.
 
 ## 2. Choose a stack
 
-The two stacks are named after the load they are tuned for: **c1** for c=1, i.e. 1 client (a single
-user, one request at a time), and **c32** for c=32, i.e. 32 concurrent clients (32 requests in flight).
+Four profiles; the name is **c** (concurrent clients it is tuned for) + **m** (multi-turn: growing conversations, prefix cache) or **s** (single-turn: independent requests).
 
 | if you... | run | what you get |
 |---|---|---|
-| run an agent or chat client that resends a growing conversation (long context, many turns) | **c1 multiturn** (`serve_c1.sh`, the default) | prefix caching and 131,072-token context: 2.3x-3.8x faster than the best stock vLLM on a 100k-token agent trace; about 394 tokens/s per single request ([MULTITURN.md](MULTITURN.md)) |
-| serve one user at a time with independent single-shot requests | **c1 single** (`serve_c1.sh --profile single`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings), no prefix caching, 8,192-token context |
-| prioritize measured broad accuracy over the maximum C1 speed | **c1-accuracy** (`serve_c1_accuracy.sh`) | W3 disabled, same drafter; 357.17 tok/s; see [all scores](ACCURACY.md) |
-| serve many multi-turn sessions at once, or many users with long shared prefixes | **c32 multiturn** (`serve_c32.sh`, the default) | Hadamard W4A4 with prefix caching: 1.57x-1.58x faster than the best stock vLLM on 32-session traces ([MULTITURN.md](MULTITURN.md)) |
-| serve many independent short requests at once | **c32 single** (`serve_c32.sh --profile single`) | Hadamard W4A4 only: 2,688.13 aggregate tokens/s in one run at c=32 (vs historical 1,757.1 best stock vLLM) |
+| use a coding agent, a long chat or document Q&A with one conversation that keeps growing | **c1m** (`./serve.sh c1m`) | prefix caching and a 131,072-token window: 2.3x-3.8x faster than the best stock vLLM on a 111k-token agent trace; about 394 tokens/s for a single request ([MULTITURN.md](MULTITURN.md)) |
+| make one-shot calls with short, unrelated prompts | **c1s** (`./serve.sh c1s`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings), no prefix caching, 8,192-token window, the largest KV cache |
+| prioritize measured broad accuracy over the maximum c1s speed | **c1s accuracy** (`./serve_c1_accuracy.sh`) | W3 disabled, same drafter; 357.17 tok/s; see [all scores](ACCURACY.md) |
+| serve a team or a fleet of agents whose conversations grow | **c32m** (`./serve.sh c32m`) | Hadamard W4A4 with prefix caching: 1.57x-1.58x faster than the best stock vLLM on 32-session traces ([MULTITURN.md](MULTITURN.md)) |
+| run batch jobs or an API of independent requests | **c32s** (`./serve.sh c32s`) | Hadamard W4A4 only: 2,688.13 aggregate tokens/s in one run at c=32 (vs historical 1,757.1 best stock vLLM) |
 
 The 14.2x / 2.08x maximum-speed claims belong only to C1 fast with `--profile single`. C1 accuracy changes only the W3 path and reuses the same drafter; C32 requires a Hadamard sidecar, not an external drafter. [Full accuracy, speed and limitations](ACCURACY.md).
 
-Both stacks accept any number of requests, but each is tuned for its load. Run one stack per GPU.
-
-**Pick in 10 seconds:**
+**Pick in 10 seconds:** one client or many (c1 / c32), then repeating prefix or not (m / s).
 
 | If you... | Run |
 |---|---|
-| chat with the model yourself, or use it as a personal or coding assistant | `./serve_c1.sh` |
-| run one agent that calls the model step by step and want each step fast | `./serve_c1.sh` |
-| serve a chatbot or API to many users at the same time | `./serve_c32.sh` |
-| run several agents in parallel, or process many documents in a batch | `./serve_c32.sh` |
-| are not sure | start with `./serve_c1.sh`; switch to `./serve_c32.sh` once you regularly have more than ~4 requests in flight |
+| chat with the model yourself, use it as a coding assistant, or run one agent that calls the model step by step | `./serve.sh c1m` |
+| call the model with independent short prompts, one at a time | `./serve.sh c1s` |
+| serve a team assistant or several agents in parallel, each with a growing conversation | `./serve.sh c32m` |
+| serve an API or batch jobs of independent requests to many users at once | `./serve.sh c32s` |
+| are not sure | one user: `c1m`; many users: `c32m` if they hold conversations, `c32s` if they send independent requests |
+
+Each profile serves any number of requests, but is tuned for its load. Run one profile per GPU.
 
 ## 3a. Install and run with Docker
 
@@ -127,15 +126,15 @@ export PATH=$CUDA_HOME/bin:$PATH
 
 ```bash
 source atdev-env.sh
-./serve_c1.sh            # or ./serve_c32.sh
+./serve.sh c1m            # or c1s, c32m, c32s
 ```
 
 * The first start compiles the CUDA kernels (this needs `nvcc`) and downloads the models. Expect it to
   take 10 minutes or more. Wait for `Application startup complete`.
 * The log should contain `atdev-serve: enabled optimizations: [...]`. If it does not, the plugin is
   not active (see [Troubleshooting](#6-troubleshooting)).
-* Change the port or the model name the API reports with `PORT=9000 SERVED_NAME=qwen ./serve_c1.sh`.
-  Extra arguments are passed to `vllm serve`, for example `./serve_c1.sh --api-key mysecret`.
+* Change the port or the model name the API reports with `PORT=9000 SERVED_NAME=qwen ./serve.sh c1m`.
+  Extra arguments are passed to `vllm serve`, for example `./serve.sh c1m --api-key mysecret`.
 
 ## 4. Send requests
 
@@ -247,8 +246,8 @@ The default context length is 8,192 total tokens (`--max-model-len 8192`, input 
 **C1 Fast W3 (`--profile single`) and C32 Hadamard W4A4 support up to 262,144 total context tokens.** The C1 `multiturn` default and C32 `multiturn` use 131,072 and 16,384 and were not tested beyond that. To select it when starting the server:
 
 ```bash
-./serve_c1.sh --profile single --max-model-len 262144
-# Or, for C32: ./serve_c32.sh --max-model-len 262144
+./serve.sh c1s --max-model-len 262144
+# Or, for c32s: ./serve.sh c32s --max-model-len 262144
 ```
 
 Each profile was tested on a single A100 80GB with **261,583 input + 21 output = 261,604 total tokens**, retrieving all three codes from the beginning, middle and end of a synthetic long input. This is a single-request functional validation; the published speed numbers remain the 8,192-context benchmark. Request `max_tokens` must fit within the remaining context after the input and chat template.

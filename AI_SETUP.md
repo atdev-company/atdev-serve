@@ -7,6 +7,63 @@ Phase 7 to the user.
 
 Repository: `https://github.com/atdev-company/atdev-serve`. Human guide: `docs/USER_GUIDE.md`.
 
+## Pick one profile first (decision guide)
+
+atdev-serve ships **four profiles**. The name says what it is for: **c** = concurrent clients and the number is how many it is tuned for; **m** = multi-turn (the server keeps the state of a growing
+conversation and prefills only what is new), **s** = single-turn (independent requests, no cache). Ask the user the two questions below, then use the table. Do not silently change a profile the user already chose.
+
+1. **How many people or programs will talk to the server at the same time?** One (or occasionally two) means `c1*`; many at once (a team, a fleet of agents, an API) means `c32*`.
+2. **Do the requests repeat a long prefix?** A coding agent, a long chat, or a document Q&A session sends the same history again with something added each turn: choose `*m`. One-shot calls with short, unrelated prompts: choose `*s`.
+
+| Setup | STACK value | Real use case | Command |
+|---|---|---|---|
+| **c1m** | `c1m` | one person with a coding agent, a long chat, or document Q&A over a long file; context grows to 100k+ tokens | `./serve.sh c1m` |
+| **c1s** | `c1s` | one-shot calls with short, unrelated prompts (classification, extraction, quick questions, scripts that call the model one prompt at a time) | `./serve.sh c1s` |
+| **c32m** | `c32m` | a shared team assistant or a fleet of agents, many conversations that each grow turn by turn | `./serve.sh c32m` |
+| **c32s** | `c32s` | batch jobs and API traffic made of many independent requests (summarize 1,000 documents, evaluation runs, a public endpoint) | `./serve.sh c32s` |
+
+If the user wants the best measured broad accuracy for single-user work and accepts a lower speed, offer **c1s accuracy** (`STACK=c1s-accuracy`, `./serve_c1_accuracy.sh`: no 3-bit overlay, 357 tok/s, benchmark scores within about 0.3-0.6 points of stock on MMLU-Pro and Korean knowledge).
+If the user is unsure and has one user: `c1m`. It costs about 3.6% on short unrelated prompts (394.4 vs 409.5 mean decode tok/s over 96 prompts) and is much faster whenever a prefix repeats.
+
+Measured facts to base the choice on (all on one A100 80GB, vLLM 0.31.0, greedy, full stack; details in [README.md](README.md) and [docs/MULTITURN.md](docs/MULTITURN.md)):
+
+* c1m: a 2 x 38-turn agent trace up to 111k tokens takes 116.0 / 205.2 / 301.2 s at `max_tokens` 128 / 512 / 2048 against 268.6 / 623.1 / 1,136.3 s for the fastest stock vLLM setting (2.32x / 3.04x / 3.77x).
+* c1s: 408.9 tok/s mean decode per request, 2.08x the best stock vLLM (196.5).
+* c32m: 32 concurrent 7-turn sessions take 73.4 / 117.6 / 199.1 s against 115.1 / 184.3 / 314.0 s (1.57x / 1.57x / 1.58x).
+* c32s: 2,688.1 aggregate output tok/s, 1.53x the best stock vLLM (single measured run).
+* KV cache: c1m holds about 284,600 tokens at its 131,072-token window; c1s about 542,000 (indicative); c32m about 514,800 at 16,384.
+
+## The four setups
+
+Each setup is a separate, self-contained recipe: pick **one**, set `STACK` to its value, then run Phases 1-8 once.
+
+### Setup c1m: one user, multi-turn (`STACK=c1m`)
+
+* **Fits:** an agent loop or chat where each request resends the conversation so far. Long context is the point: 131,072-token window (the measured trace reaches 111k tokens).
+* **What you get:** prefix caching (cache hit rate 0.95 on the trace), faster prefill kernels, a start-up warmup that logs `atdev warmup: done`. Single requests decode at 394.4 tok/s.
+* **Downloads:** INT4 target (19 GB) + W3 overlay (12.5 GB) + drafter (1.35 GB) from `atdev-company/Qwen3.8-27B-atdev-c1`.
+* **Caveats to tell the user:** 3.6-3.7% slower than c1s on independent short prompts; the KV cache is smaller than c1s; the prefix cache only helps when the conversation prefix is unchanged; greedy decoding only; the c1 W3 overlay carries a measured 2.5-3.3 point gap on MMLU-Pro and Korean knowledge against stock INT4.
+* **Optional:** `ATDEV_EOR_CKPT=1` also reuses the server's own previous reply (neutral at c=1 on the measured traces).
+
+### Setup c1s: one user, single-turn (`STACK=c1s`)
+
+* **Fits:** independent requests with short prompts, where nothing repeats; or when you need the longest window: `--max-model-len 262144` was tested (261,583 input tokens).
+* **What you get:** 408.9 tok/s decode per request (2.08x best stock vLLM), the largest KV cache, no prefix caching, 8,192-token default window.
+* **Downloads:** same as c1m. `c1s accuracy` (`STACK=c1s-accuracy`) skips the W3 overlay.
+
+### Setup c32m: many users, multi-turn (`STACK=c32m`)
+
+* **Fits:** up to 32 conversations in flight that each grow (shared assistant, agent fleet). 16,384-token window, prefix caching for MTP with the shared-prefix checkpoint.
+* **What you get:** 1.57x-1.58x faster than the best stock vLLM on 32 concurrent 7-turn sessions, a start-up warmup with 32-way waves.
+* **Downloads:** INT4 target (19 GB) + the Hadamard sidecar (about 12.5 GB) from `atdev-company/Qwen3.8-27B-atdev-c32`. No separate drafter.
+* **Caveats:** IFEval prompt strict is 2.0 points below stock INT4 (run-to-run spread up to about 4 points); outputs are not byte-identical to stock; greedy decoding only. `ATDEV_EOR_CKPT=1` (off by default) helps live conversations at the cost of 3% more GPU memory.
+
+### Setup c32s: many users, single-turn (`STACK=c32s`)
+
+* **Fits:** batch jobs and API traffic of independent requests. 8,192-token default window (262,144 tested).
+* **What you get:** 2,688.1 aggregate output tok/s at 32 in flight (1.53x best stock vLLM, single measured run), Hadamard W4A4 accuracy in the class of stock INT4.
+* **Downloads:** same as c32m.
+
 ## Tested environment reference
 
 The project's inspected stack is **Python 3.12.13 / PyTorch 2.13.0+cu130 /
@@ -25,7 +82,7 @@ check both `torch.version.cuda` and `nvcc --version`.
   `CUDA_VISIBLE_DEVICES=<index>` for every command and do not change it afterwards. A busy GPU means
   more than 1 GB already used or any compute process listed by `nvidia-smi`.
 * **R3. Long first start.** The first server start compiles CUDA kernels and downloads model files
-  (about 32 GiB for C1 fast; C1 accuracy skips the 12.5 GB W3 overlay; C32 needs the INT4 base plus a roughly 12.5 GB Hadamard sidecar; profiles are defined in Phase 1). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
+  (about 32 GiB for c1m / c1s; c1s accuracy skips the 12.5 GB W3 overlay; c32m / c32s need the INT4 base plus a roughly 12.5 GB Hadamard sidecar; profiles are defined in the decision guide). Allow up to 2 hours. Do not interrupt it: interrupting can leave stale build locks (see F6).
 * **R4. Paths.** Work inside the repository root (`$REPO`). Use absolute paths in your own scripts.
 * **R5. Secrets.** Reuse an existing authorized Hub login or user-provided `HF_TOKEN` first. If access is still needed, ask the user to provide it or run
   `huggingface-cli login`. Never print it or write it to files in the repository.
@@ -49,8 +106,8 @@ source "$REPO/atdev-env.sh"
 python -m pip install --no-deps --force-reinstall "$REPO"
 ```
 
-Restart only a server you own. The current C32 profile requires its additional Hadamard sidecar;
-C1 accuracy needs the existing drafter but no W3 overlay. Docker users rebuild with `--build`.
+Restart only a server you own. c32m / c32s require the additional Hadamard sidecar;
+c1s accuracy needs the existing drafter but no W3 overlay. Docker users rebuild with `--build`.
 
 ## Phase 1: preflight (read-only)
 
@@ -73,17 +130,22 @@ GPUs: judge P2 / P4 only by the row for the chosen index.
 **Choose the install path.** If P7 passes, use **Phase 2A (Docker)**. If not, use **Phase 2B
 (venv)**, which requires P8, P9 and P10 to pass.
 
-**Choose the stack.** `c1` is tuned for c=1, i.e. 1 client (a single user, one request at a time);
-`c32` is tuned for c=32, i.e. 32 concurrent clients (32 requests in flight). Use `c1` (lowest latency
-per request, original W3 maximum-speed profile) unless the user asks for improved measured broad accuracy: then use `c1-accuracy`, which disables W3 but retains the same drafter and engine. For many concurrent users or throughput, use `c32`, which ships only Hadamard W4A4 with built-in MTP. For agents or chat clients that resend a long growing conversation, `c1` (the default) now runs the multiturn profile (prefix caching, 131,072-token context, a start-up warmup; 3.7% slower than the old launch on single requests); `STACK=c1-single` selects the old no-prefix-cache launch; `c32` likewise runs the multiturn profile (prefix caching for 32 sessions) and `STACK=c32-single` the previous launch. Set `STACK=c1`, `STACK=c1-single`, `STACK=c1-accuracy`, `STACK=c32`, or `STACK=c32-single`. Do not silently change a user-selected profile. The up-to-14.2x headline belongs only to C1 fast with the single profile; inspect [docs/ACCURACY.md](docs/ACCURACY.md) for all score and speed differences.
+**Choose the stack.** Use the decision guide at the top. Set exactly one of `STACK=c1m`, `STACK=c1s`, `STACK=c1s-accuracy`, `STACK=c32m`, `STACK=c32s`. Docker uses the compose profile with the matching name:
+`c1m` -> `c1`, `c1s` -> `c1-single`, `c1s-accuracy` -> `c1-accuracy`, `c32m` -> `c32`, `c32s` -> `c32-single`; set `COMPOSE_PROFILE` accordingly:
+
+```bash
+case "$STACK" in c1m) COMPOSE_PROFILE=c1;; c1s) COMPOSE_PROFILE=c1-single;; c1s-accuracy) COMPOSE_PROFILE=c1-accuracy;; c32m) COMPOSE_PROFILE=c32;; c32s) COMPOSE_PROFILE=c32-single;; *) echo "bad STACK"; exit 2;; esac
+```
+
+The up-to-14.2x headline belongs only to c1s; the multi-turn speedups (up to 3.77x for c1m, 1.58x for c32m) are full-stack results measured on scripted conversations; inspect [docs/ACCURACY.md](docs/ACCURACY.md) and [docs/MULTITURN.md](docs/MULTITURN.md) for all score and speed differences.
 
 ## Phase 2A: install with Docker
 
 ```bash
 cd "$REPO"
 export ATDEV_GPU=<gpu index from P4> ATDEV_PORT=8100
-docker compose --profile "$STACK" build
-docker compose --profile "$STACK" run --rm "atdev-$STACK" check
+docker compose --profile "$COMPOSE_PROFILE" build
+docker compose --profile "$COMPOSE_PROFILE" run --rm "atdev-$COMPOSE_PROFILE" check
 ```
 
 Expected: the `check` output includes `vllm 0.31.0`, a `cuda available True` line and an nvcc line
@@ -92,11 +154,11 @@ with `release 13.0`. On a build failure, record the last 50 lines and go to F10.
 Then start it, detached:
 
 ```bash
-docker compose --profile "$STACK" up -d
-docker compose --profile "$STACK" logs -f --tail 20     # watch for the lines in Phase 4
+docker compose --profile "$COMPOSE_PROFILE" up -d
+docker compose --profile "$COMPOSE_PROFILE" logs -f --tail 20     # watch for the lines in Phase 4
 ```
 
-Continue with Phase 4. Use `docker compose --profile "$STACK" logs` wherever Phase 4 reads
+Continue with Phase 4. Use `docker compose --profile "$COMPOSE_PROFILE" logs` wherever Phase 4 reads
 `$LOG`.
 
 ## Phase 2B: install with a virtualenv
@@ -134,14 +196,11 @@ source "$REPO/atdev-env.sh"
 export CUDA_VISIBLE_DEVICES=<gpu index from P4>
 LOG="$REPO/server_$STACK.log"
 case "$STACK" in
-  c1) START_SCRIPT=serve_c1.sh ;;                                # multiturn profile (prefix caching, 131072 context)
-  c1-single) START_SCRIPT=serve_c1.sh; export PROFILE=single ;;  # previous launch: no prefix caching, 8192 context
-  c1-accuracy) START_SCRIPT=serve_c1_accuracy.sh ;;
-  c32) START_SCRIPT=serve_c32.sh ;;                                # multiturn profile (prefix caching, 16384 context)
-  c32-single) START_SCRIPT=serve_c32.sh; export PROFILE=single ;;  # previous launch: no prefix caching, 8192 context
-  *) echo "Choose c1, c1-single, c1-accuracy, c32 or c32-single"; exit 2 ;;
+  c1m|c1s|c32m|c32s) START_SCRIPT=serve.sh; START_ARG=$STACK ;;     # ./serve.sh <name>
+  c1s-accuracy) START_SCRIPT=serve_c1_accuracy.sh; START_ARG= ;;
+  *) echo "Choose c1m, c1s, c1s-accuracy, c32m or c32s"; exit 2 ;;
 esac
-nohup setsid bash -c 'echo $$ > "$1"; exec "./$2"' _ "$REPO/server_$STACK.pid" "$START_SCRIPT" > "$LOG" 2>&1 &
+nohup setsid bash -c 'echo $$ > "$1"; exec "./$2" $3' _ "$REPO/server_$STACK.pid" "$START_SCRIPT" "$START_ARG" > "$LOG" 2>&1 &
 # the PID file holds the process-group leader (used by Phase 8)
 ```
 
@@ -159,9 +218,9 @@ done
 ```
 
 Docker path: replace the `grep` line with
-`docker compose --profile "$STACK" logs --no-color 2>&1 | grep -qE 'Traceback|Error:' && { echo FAILED; break; }`
+`docker compose --profile "$COMPOSE_PROFILE" logs --no-color 2>&1 | grep -qE 'Traceback|Error:' && { echo FAILED; break; }`
 and the `kill -0` line with
-`[ -n "$(docker compose --profile "$STACK" ps -q --status running)" ] || { echo FAILED; break; }`.
+`[ -n "$(docker compose --profile "$COMPOSE_PROFILE" ps -q --status running)" ] || { echo FAILED; break; }`.
 
 While waiting, these log lines are expected, in roughly this order:
 
@@ -175,9 +234,9 @@ While waiting, these log lines are expected, in roughly this order:
 
 Verify the selected profile before accepting readiness:
 
-- `c1`: W3 mixed loading must be enabled; both original W3 sidecars and the quantized d16 drafter are used.
-- `c1-accuracy`: W3 mixed loading must be absent; the same d16 drafter remains enabled. No W3 overlay should be requested or downloaded.
-- `c32`: Hadamard W4A4 (`ATDEV_A4_REAL=had3`) and the selected sidecar must load. Built-in MTP remains enabled; no DFlash/external drafter is added. Do not fall back to unrotated W4A4 or W4A8 after an error.
+- `c1m` and `c1s`: W3 mixed loading must be enabled; both original W3 sidecars and the quantized d16 drafter are used. `c1m` additionally logs `atdev warmup: done` a short while after readiness (wait for it before measuring).
+- `c1s-accuracy`: W3 mixed loading must be absent; the same d16 drafter remains enabled. No W3 overlay should be requested or downloaded.
+- `c32m` and `c32s`: Hadamard W4A4 (`ATDEV_A4_REAL=had3`) and the selected sidecar must load (`c32m` also logs the warmup line). Built-in MTP remains enabled; no DFlash/external drafter is added. Do not fall back to unrotated W4A4 or W4A8 after an error.
 
 Triton JIT warnings on the first request are normal.
 
@@ -189,7 +248,7 @@ cache.
 
 ### Optional 262,144-token context
 
-The default launch limit of `c1-single` and `c32-single` is 8,192 total tokens (input + output); `c1` (multiturn) starts with 131,072 and `c32` (multiturn) with 16,384, and neither was tested with 262,144. If the user requests the full native context, start **C1 Fast W3 (`c1-single`) or C32 Hadamard W4A4 (`c32-single`)** with `--max-model-len 262144` appended to its launch command. If a server is already running, stop only the owned server before restarting it with the new limit.
+The default launch limit of `c1s` and `c32s` is 8,192 total tokens (input + output); `c1m` starts with 131,072 and `c32m` with 16,384, and neither was tested with 262,144. If the user requests the full native context, start **`c1s` or `c32s`** with `--max-model-len 262144` appended to its launch command. If a server is already running, stop only the owned server before restarting it with the new limit.
 
 Both profiles passed a single-A100-80GB test with **261,583 input + 21 output = 261,604 total tokens**, correctly retrieving three codes from the beginning, middle and end of a synthetic long input. Keep request `max_tokens` within the remaining context. Published speed benchmarks still use the 8,192-context preset and an output cap of 1,024 tokens.
 
@@ -226,8 +285,8 @@ n = r["usage"]["completion_tokens"]; print(f"{n} tokens in {dt:.1f} s = {n / dt:
 PY
 ```
 
-Expected on an idle A100 80GB with the `c1` stack: a few hundred tok/s for one request (the
-published 408.9 is the original C1-fast mean over 96 prompts; single prompts vary). C1 accuracy measured 357.17 tok/s over two repetitions. C32 Hadamard measured 2,688.13 aggregate tok/s at c=32 in one run; do not compare that with a single-request speed. The `c32` stack is tuned for many
+Expected on an idle A100 80GB with `c1s` (about 394 tok/s with `c1m`): a few hundred tok/s for one request (the
+published 408.9 is the c1s mean over 96 prompts; single prompts vary). c1s accuracy measured 357.17 tok/s over two repetitions. c32s measured 2,688.13 aggregate tok/s at c=32 in one run (c32m is measured on conversation traces, not on this workload); do not compare that with a single-request speed. The c32 profiles are tuned for many
 concurrent requests, so one request alone is slower there. The full measurement method is in
 `docs/BENCHMARKS.md`.
 
@@ -243,7 +302,7 @@ concurrent requests, so one request alone is slower there. The full measurement 
 | F6 | log stalls at `Waiting for lock` / `waiting for ... lock` | a stale build lock from an interrupted start. Stop the server, run `find "${TORCH_EXTENSIONS_DIR:-$HOME/.cache/torch_extensions}" -name lock -delete`, and restart |
 | F7 | `CUDA out of memory` while loading | the GPU is not free (P4). Pick another GPU or ask the user (R1) |
 | F8 | `GatedRepoError` / `401` / `RepositoryNotFound` | ask the user for HF access / token (R5), then retry |
-| F9 | no internet | the models must already be local; for C1 accuracy omit W3 and use the same local drafter; for C32 set `HADW=/models/atdev-c32/hadamard/qwen38_27b_hadamard_gptq_d10.safetensors` and pre-cache the INT4 base. C1 fast: set `MODEL=<dir>` (and for c1 `W3_OVERLAY=<dir>/w3/w3_gptqact_d30_mlpo.safetensors,<dir>/w3/w3_gptqact_d30_qkv.safetensors` `DRAFTER=<dir>/drafter`, where `<dir>` is a local copy of `atdev-company/Qwen3.8-27B-atdev-c1`) and `HF_HUB_OFFLINE=1` |
+| F9 | no internet | the models must already be local; for c1s accuracy omit W3 and use the same local drafter; for C32 set `HADW=/models/atdev-c32/hadamard/qwen38_27b_hadamard_gptq_d10.safetensors` and pre-cache the INT4 base. c1m / c1s: set `MODEL=<dir>` (and for c1 `W3_OVERLAY=<dir>/w3/w3_gptqact_d30_mlpo.safetensors,<dir>/w3/w3_gptqact_d30_qkv.safetensors` `DRAFTER=<dir>/drafter`, where `<dir>` is a local copy of `atdev-company/Qwen3.8-27B-atdev-c1`) and `HF_HUB_OFFLINE=1` |
 | F10 | Docker build fails on `apt-get` or `pip` | retry once (network). If the base image tag is not found, use `--build-arg CUDA_IMAGE=nvidia/cuda:13.0.0-devel-ubuntu24.04` |
 | F11 | `unsupported GNU version` from nvcc | install a g++ version supported by nvcc 13.0 and export `CC` / `CXX` (R1) |
 | F12 | `unknown ATDEV_OPT entries` | `ATDEV_OPT` was edited by hand. Restore it from the serve script |
@@ -255,7 +314,7 @@ to the user.
 
 ## Phase 7: report to the user
 
-Report: the install path (Docker or venv), the exact profile (`c1` fast / `c1-accuracy` / `c32` Hadamard W4A4), the GPU index, the endpoint URL
+Report: the install path (Docker or venv), the exact profile (`c1m` / `c1s` / `c1s-accuracy` / `c32m` / `c32s`), the GPU index, the endpoint URL
 (`http://<host>:8100/v1`, model name `m`), the time the first start took, the result of the Phase 5
 math check, and the speed check result if it was run. Give the user the commands to stop and
 restart the server (Phase 8). Include the active target precision, sidecar/drafter sources, and whether the observed speed uses single-request decode or aggregate throughput. Report any errors or accuracy differences; do not label a short math answer as full accuracy validation. Link the measured profile table in `docs/ACCURACY.md`.
@@ -266,7 +325,7 @@ restart the server (Phase 8). Include the active target precision, sidecar/draft
 # venv
 kill -TERM -- -"$(cat "$REPO/server_$STACK.pid")"      # stops the process group started in Phase 3
 # Docker
-docker compose --profile "$STACK" down
+docker compose --profile "$COMPOSE_PROFILE" down
 ```
 
 Restarting uses the same commands as Phase 3 / Phase 2A. It is fast after the first start, because

@@ -4,12 +4,14 @@ Agents and chat clients send the same growing conversation again on every turn. 
 that history each time. The `multiturn` profiles keep the state of the conversation so far (attention KV
 and the recurrent GDN state) and prefill only what is new, and they speed up the prefill that remains.
 
-| Launch | What it is |
-|---|---|
-| `./serve_c1.sh` (= `--profile multiturn`, the default) | C1 full stack with prefix caching, 131,072-token context, chunked-prefill kernels and a start-up JIT warmup |
-| `./serve_c1.sh --profile single` | the previous C1 launch: no prefix caching, 8,192-token context |
-| `./serve_c32.sh` (= `--profile multiturn`, the default) | the Hadamard W4A4 C32 stack with prefix caching for 32 concurrent sessions, 16,384-token context, chunked-prefill kernels and a start-up warmup |
-| `./serve_c32.sh --profile single` | the previous C32 launch: Hadamard W4A4, no prefix caching, 8,192-token context |
+Profile names: **c** = concurrent clients (the number it is tuned for), **m** = multi-turn, **s** = single-turn (see the [README](../README.md#the-four-profiles)).
+
+| Profile | Launch | What it is |
+|---|---|---|
+| **c1m** | `./serve.sh c1m` (= `./serve_c1.sh --profile multiturn`) | C1 full stack with prefix caching, 131,072-token context, chunked-prefill kernels and a start-up JIT warmup |
+| **c1s** | `./serve.sh c1s` (= `./serve_c1.sh --profile single`) | the previous C1 launch: no prefix caching, 8,192-token context |
+| **c32m** | `./serve.sh c32m` (= `./serve_c32.sh --profile multiturn`) | the Hadamard W4A4 C32 stack with prefix caching for 32 concurrent sessions, 16,384-token context, chunked-prefill kernels and a start-up warmup |
+| **c32s** | `./serve.sh c32s` (= `./serve_c32.sh --profile single`) | the previous C32 launch: Hadamard W4A4, no prefix caching, 8,192-token context |
 
 All numbers on this page are wall-clock times of a fixed, scripted conversation replayed against the server
 (speed only; the accuracy checks are in the last section). They are **full-stack** numbers, see
@@ -194,8 +196,7 @@ prefix cache on; broad scores use the same harness as [ACCURACY.md](ACCURACY.md)
 
 ## Where the numbers come from
 
-* **Speed.** The C1 and C32 multi-turn timings and the energy tables were measured on the frozen research bundles (the `C1FINAL` and `C32MT` /
-  `A4ACC` runs of our development tree). The release tree in this repository was then checked against them: C1 `multiturn`, v5 caps 128 / 512:
+* **Speed.** The C1 and C32 multi-turn timings and the energy tables were measured on the frozen research bundles of our development tree (the runtime the profiles were built from). The release tree in this repository was then checked against them: C1 `multiturn`, v5 caps 128 / 512:
   115.0 / 204.4 s against 116.0 / 205.2 s, with the generated text of all 76 turns identical to the frozen run; C32 `multiturn`, v5-c32 caps 128 / 512:
   73.5 / 118.0 s against 73.4 / 117.6 s (frozen, same 3-rep family).
 * **Accuracy.** The C1 broad evaluation and all C32 broad scores (MMLU-Pro, KMMLU, IFEval, HumanEval, MBPP, GSM8K-1319, long-context) were run on the
