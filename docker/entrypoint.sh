@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Container entrypoint.  c1m | c1s | c1s-accuracy | c32m | c32s [extra vllm serve args]  -> launch that profile (./serve.sh <name>)
+# Container entrypoint.  c1m | c1s | c1m-accuracy | c1s-accuracy | c32m | c32s [extra vllm serve args]  -> launch that profile (./serve.sh <name>)
 #                        c1 | c1-single | c1-accuracy | c32 | c32-single                   -> old names, same launch as c1m | c1s | c1s-accuracy | c32m | c32s
 #                        check                                                            -> print versions / GPU / nvcc and exit
 #                        anything else                                                    -> run it as a command (e.g. bash)
@@ -10,7 +10,8 @@ stack=${1:-c1m}
 case $stack in
   c1m|c1)                exec ./serve.sh c1m "$@" ;;
   c1s|c1-single)         exec ./serve.sh c1s "$@" ;;
-  c1s-accuracy|c1-accuracy) exec ./serve_c1_accuracy.sh "$@" ;;
+  c1s-accuracy|c1-accuracy) exec ./serve.sh c1s-accuracy "$@" ;;
+  c1m-accuracy)          exec ./serve.sh c1m-accuracy "$@" ;;
   c32m|c32)              exec ./serve.sh c32m "$@" ;;
   c32s|c32-single)       exec ./serve.sh c32s "$@" ;;
   check)

@@ -38,9 +38,6 @@ if [[ -z "$PROFILE" ]]; then  # default: multiturn, except the explicit accuracy
   if [[ "$C1_MODE" == fast ]]; then PROFILE=multiturn; else PROFILE=single; fi
 fi
 case "$PROFILE" in multiturn|single) ;; *) echo "invalid profile '$PROFILE': use multiturn or single" >&2; exit 2 ;; esac
-if [[ "$PROFILE" == multiturn && "$C1_MODE" != fast ]]; then
-  echo "C1_MODE=$C1_MODE is only available with --profile single (prefix caching was validated with the W3 stack only)" >&2; exit 2
-fi
 
 MODEL=${MODEL:-RedHatAI/Qwen3.8-27B-INT4}
 HF_REPO=${HF_REPO:-atdev-company/Qwen3.8-27B-atdev-c1}  # one repo: w3/ (overlay) + drafter/ (drafter)
@@ -82,15 +79,15 @@ if [[ "$PROFILE" == multiturn ]]; then
   export VLLM_USE_V2_MODEL_RUNNER=${VLLM_USE_V2_MODEL_RUNNER:-1}
   export ATDEV_DFT_APC=1                               # tree verification under prefix caching (needs --mamba-cache-mode align)
   export ATDEV_PF_FUSE=1                               # Triton kernels for the prefill-side epilogues of the W3 GEMMs
-  export ATDEV_PF_GLUE=1                               # prefill SiLU*mul / residual-RMSNorm fused with the int8 activation quantization
+  [[ "$C1_MODE" == fast ]] && export ATDEV_PF_GLUE=1   # prefill SiLU*mul / residual-RMSNorm fused with the int8 activation quantization (W3 stack only)
   export ATDEV_PF_FA2=1                                # prefill attention: FlashAttention-2 for q >= 32 (rounding-level difference to TRITON_ATTN)
   export ATDEV_PF_FA2_GATHER=1                         #   ... with gathered KV for long single-request chunks
   export ATDEV_PF_FA2_FI=1                             #   ... FlashInfer split-KV for short tails (q 2..299) at long context
   export ATDEV_PF_FA2_FI_MINQ=2
   export ATDEV_PF_FA2_FI_PINRING=1                     #   ... pinned plan buffers in a ring (fixes a CUDA illegal-memory-access race)
   export ATDEV_SWA_FINE=1                              # fine-grained prefix hits for the drafter's sliding-window layers
-  export ATDEV_W3_DQ=1 ATDEV_W3_DQ_MIN_M=1536          # prefill M >= 1536: W3 dequantized to int8 once per layer, int8 GEMM
-  export ATDEV_W3_I8=1 ATDEV_W3_I8_MIN_M=64            # 64 <= M < 1536: int8 activations into the W3 GEMM
+  [[ "$C1_MODE" == fast ]] && export ATDEV_W3_DQ=1 ATDEV_W3_DQ_MIN_M=1536  # prefill M >= 1536: W3 dequantized to int8 once per layer, int8 GEMM (W3 only)
+  [[ "$C1_MODE" == fast ]] && export ATDEV_W3_I8=1 ATDEV_W3_I8_MIN_M=64    # 64 <= M < 1536: int8 activations into the W3 GEMM (W3 only)
   export ATDEV_TOK_CACHE=1                             # frontend: per-segment tokenization cache for growing chat histories
   export ATDEV_GDN_SMALL=32                            # GDN prefill chunks of <= 32 tokens: recurrent kernel instead of chunked FLA
   export ATDEV_TREE_HSPL=auto                          # tree-attention head split picked per context length

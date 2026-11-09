@@ -46,7 +46,6 @@ class Profiles(unittest.TestCase):
         self.assertIn('--enable-mamba-shared-prefix-checkpoint',a);self.assertEqual(a[a.index('--prefix-match-unit')+1],'16')
         self.assertEqual(a[a.index('--max-model-len')+1],'131072');self.assertEqual(a[a.index('--max-num-batched-tokens')+1],'2048')
         self.assertEqual(a[-2:],['--seed','17']);self.assertIn('multiturn',run.stderr)
-        bad,_=self.launch('serve_c1.sh','--profile','multiturn',C1_MODE='accuracy');self.assertNotEqual(bad.returncode,0)
         eor,e=self.launch('serve_c1.sh',NO_WARMUP='1',ATDEV_EOR_CKPT='1');self.assertEqual(eor.returncode,0,eor.stderr)
         self.assertEqual((e['env']['ATDEV_EOR_CKPT'],e['env']['ATDEV_EOR_SNAP']),('1','16'))
 
@@ -113,7 +112,7 @@ class Profiles(unittest.TestCase):
         self.assertIn('atdev_serve.drafter_w4',called)
 
     def test_serve_sh_names_resolve_to_the_same_env_and_argv_as_the_direct_launchers(self):
-        pairs=(('c1m',('serve_c1.sh','--profile','multiturn')),('c1s',('serve_c1.sh','--profile','single')),
+        pairs=(('c1m',('serve_c1.sh','--profile','multiturn')),('c1s-accuracy',('serve_c1_accuracy.sh',)),('c1s',('serve_c1.sh','--profile','single')),
                ('c32m',('serve_c32.sh','--profile','multiturn')),('c32s',('serve_c32.sh','--profile','single')))
         for name,direct in pairs:
             a,pa=self.launch('serve.sh',name,NO_WARMUP='1',HADW='/tmp/h.safetensors');b,pb=self.launch(*direct,NO_WARMUP='1',HADW='/tmp/h.safetensors')
@@ -123,7 +122,34 @@ class Profiles(unittest.TestCase):
         extra,pe=self.launch('serve.sh','c1m','--port','9999',NO_WARMUP='1');self.assertEqual(extra.returncode,0,extra.stderr)
         self.assertIn('9999',pe['argv'])
 
-    DOCKER={'c1m':'c1m','c1':'c1m','c1s':'c1s','c1-single':'c1s','c1s-accuracy':'acc','c1-accuracy':'acc','c32m':'c32m','c32':'c32m','c32s':'c32s','c32-single':'c32s'}
+    W3_ONLY=('ATDEV_PF_GLUE','ATDEV_W3_DQ','ATDEV_W3_DQ_MIN_M','ATDEV_W3_I8','ATDEV_W3_I8_MIN_M','ATDEV_W3_SIDECAR')
+
+    def test_existing_launches_are_unchanged_against_the_golden_env_and_argv(self):
+        golden=json.loads((ROOT/'tests'/'golden_launch_env.json').read_text().replace('{ROOT}',str(ROOT).replace('\\','/')))
+        cases=(('c1m',('serve_c1.sh','--profile','multiturn')),('c1s',('serve_c1.sh','--profile','single')),
+               ('c32m',('serve_c32.sh','--profile','multiturn')),('c32s',('serve_c32.sh','--profile','single')),('c1-acc-script',('serve_c1_accuracy.sh',)))
+        for name,direct in cases:
+            run,p=self.launch(*direct,NO_WARMUP='1',HADW='/tmp/h.safetensors');self.assertEqual(run.returncode,0,run.stderr)
+            self.assertEqual(p,golden[name],name)
+
+    def test_c1m_accuracy_is_c1m_without_the_w3_overlay_and_w3_only_flags(self):
+        _,mt=self.launch('serve.sh','c1m',NO_WARMUP='1')
+        run,acc=self.launch('serve.sh','c1m-accuracy',NO_WARMUP='1',ATDEV_W3_SIDECAR='must-not-load');self.assertEqual(run.returncode,0,run.stderr)
+        self.assertIn('c1-accuracy',run.stderr);self.assertIn('multiturn',run.stderr)
+        self.assertEqual(acc['argv'],mt['argv'])
+        expected={k:v for k,v in mt['env'].items() if k not in self.W3_ONLY}
+        expected['ATDEV_OPT']=','.join(x for x in FAST.split(',') if x!='w3_mixed')
+        self.assertEqual(acc['env'],expected)
+        for k in self.W3_ONLY:self.assertNotIn(k,acc['env'],k)
+        self.assertNotIn('w3_mixed',acc['env']['ATDEV_OPT'])
+        for k in ('ATDEV_DFT_APC','ATDEV_PF_FUSE','ATDEV_PF_FA2','ATDEV_SWA_FINE','ATDEV_TOK_CACHE','ATDEV_GDN_SMALL','ATDEV_TREE_HSPL'):self.assertIn(k,acc['env'],k)
+        a=acc['argv'];self.assertIn('--enable-prefix-caching',a);self.assertEqual(a[a.index('--max-model-len')+1],'131072')
+        direct,pd=self.launch('serve_c1.sh','--profile','multiturn',C1_MODE='accuracy',NO_WARMUP='1');self.assertEqual(pd['env'],acc['env']);self.assertEqual(pd['argv'],acc['argv'])
+        s1,single=self.launch('serve.sh','c1s',NO_WARMUP='1');s2,sacc=self.launch('serve.sh','c1s-accuracy',NO_WARMUP='1')
+        self.assertEqual(sacc['argv'],single['argv'])
+        for k in self.W3_ONLY:self.assertNotIn(k,sacc['env'],k)
+
+    DOCKER={'c1m':'c1m','c1':'c1m','c1s':'c1s','c1-single':'c1s','c1s-accuracy':'acc','c1-accuracy':'acc','c1m-accuracy':'c1m-accuracy','c32m':'c32m','c32':'c32m','c32s':'c32s','c32-single':'c32s'}
 
     def test_docker_entrypoint_names_and_old_aliases_dispatch_like_serve_sh(self):
         for name,target in self.DOCKER.items():
@@ -140,7 +166,7 @@ class Profiles(unittest.TestCase):
         seen={}
         for name,conf in svc.items():
             for prof in conf['profiles']:seen[prof]=conf['command'][0]
-        expected={'c1m':'c1m','c1':'c1m','c1s':'c1s','c1-single':'c1s','c1s-accuracy':'c1s-accuracy','c1-accuracy':'c1s-accuracy',
+        expected={'c1m':'c1m','c1':'c1m','c1s':'c1s','c1-single':'c1s','c1s-accuracy':'c1s-accuracy','c1-accuracy':'c1s-accuracy','c1m-accuracy':'c1m-accuracy',
                   'c32m':'c32m','c32':'c32m','c32s':'c32s','c32-single':'c32s'}
         self.assertEqual(seen,expected)
         for arg in set(seen.values()):self.assertIn(arg,self.DOCKER)  # every command is a name the entrypoint dispatches

@@ -4,6 +4,7 @@
 #   docker compose --profile c32m up --build   # 32 clients, multi-turn
 #   docker compose --profile c32s up --build   # 32 clients, single-turn
 #   docker compose --profile c1s-accuracy up --build   # c1s without the 3-bit overlay
+#   docker compose --profile c1m-accuracy up --build   # c1m without the 3-bit overlay
 # The old profile names (c1, c1-single, c1-accuracy, c32, c32-single) still work and start the same service.
 # Env (optional, e.g. in a .env file next to this file):
 #   ATDEV_GPU   host GPU index to use (default 0)      ATDEV_PORT  host port (default 8100)
@@ -43,6 +44,10 @@ services:
     <<: *atdev
     profiles: ["c1s-accuracy", "c1-accuracy"]
     command: ["c1s-accuracy"]
+  atdev-c1m-accuracy:
+    <<: *atdev
+    profiles: ["c1m-accuracy"]
+    command: ["c1m-accuracy"]
   atdev-c32m:
     <<: *atdev
     profiles: ["c32m", "c32"]
