@@ -52,15 +52,31 @@ Largest measured multiples: c1m at `max_tokens` 2048, c32m at `max_tokens` 128. 
 
 ## Install
 
-**Manual, in four lines** (Linux, one A100 80GB, NVIDIA driver for CUDA 13.0, CUDA 13.0 toolkit with `nvcc`, and Hugging Face access; Docker works too, see [Quick start](#quick-start)):
+You need Linux, one A100 80GB, an NVIDIA driver for CUDA 13.0, Hugging Face access, and either the CUDA 13.0 toolkit with `nvcc` (Python route) or Docker.
+
+**Python**
 
 ```bash
 git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
 ./install.sh && source atdev-env.sh      # checks the machine, creates .venv, installs vllm==0.31.0 + atdev-serve
-./serve.sh c1m                           # or c1s, c32m, c32s
+./serve.sh c1m                           # or c1s, c32m, c32s   (c1s accuracy flavor: ./serve_c1_accuracy.sh)
 ```
 
-The first start compiles kernels and downloads the models (12-16 minutes on our test machine). Everything else (preflight checks, Docker, environment variables, troubleshooting) is in [AI_SETUP.md](https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md) and [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+**Docker** (no CUDA toolkit needed on the host)
+
+```bash
+git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
+docker compose --profile c1m up --build  # or c1s, c32m, c32s (c1s accuracy: c1s-accuracy; the old names c1, c1-single, c1-accuracy, c32, c32-single still work)
+```
+
+The first start compiles kernels and downloads the models (12-16 minutes on our test machine); later starts reuse the cache. Then send a request (the launchers default to `temperature: 0`, greedy):
+
+```bash
+curl http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"m","messages":[{"role":"user","content":"Hello!"}],"temperature":0,"max_tokens":128}'
+```
+
+For prefix caching to help (c1m, c32m), send the same conversation prefix again: an unchanged system prompt and history, then the new message. Everything else (preflight checks, environment variables, troubleshooting) is in [AI_SETUP.md](https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md) and [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 **Or let an AI coding agent do it.** Paste one of these into your agent (Claude Code, Codex, Cursor, ...), on the GPU machine:
 
@@ -266,42 +282,6 @@ and has more KV room. c1m therefore costs little when it is not needed.
 **c1s and c32s support up to 262,144 total context tokens (input + output).** Each was tested on a single A100 80GB with **261,583 input tokens + 21 output tokens = 261,604 total tokens**, correctly retrieving all three codes placed at the beginning, middle and end of a synthetic long input.
 Pass `--max-model-len 262144` to the launcher (`./serve.sh c1s --max-model-len 262144`). This is a single long-request functional test for each profile; the published speed benchmarks use the default windows and output caps stated with each result.
 **c1m** defaults to 131,072 tokens (its trace reaches 111k) and **c32m** to 16,384; neither was tested beyond its default.
-
-## Quick start
-
-You need: Linux, an **A100 80GB**, an NVIDIA driver that supports CUDA 13.0, 80 GB of free disk,
-and Hugging Face Hub access. The step-by-step guide is [docs/USER_GUIDE.md](docs/USER_GUIDE.md); the agent-friendly version is [AI_SETUP.md](AI_SETUP.md).
-
-**Option A: Docker** (you do not need to install CUDA on the host)
-
-```bash
-git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
-docker compose --profile c1 up --build        # c1m: one client, multi-turn (port 8100)
-# or: docker compose --profile c1-single up --build   # c1s
-# or: docker compose --profile c32 up --build         # c32m
-# or: docker compose --profile c32-single up --build  # c32s
-```
-
-**Option B: Python virtualenv** (needs the CUDA 13.0 toolkit with `nvcc` on the host)
-
-```bash
-git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
-./install.sh                 # checks the machine, creates .venv, installs vllm==0.31.0 + atdev-serve
-source atdev-env.sh          # activates .venv and sets CUDA_HOME for the kernel build
-./serve.sh c1m               # or c1s, c32m, c32s
-# ./serve_c1_accuracy.sh      # c1s accuracy flavor (W3 disabled, same drafter)
-```
-
-**Default sampling:** the launchers set the server default to `temperature: 0` (greedy). Requests may omit `temperature`; an explicit request value takes precedence. Published measurements use `temperature: 0`.
-
-The first start JIT-compiles the CUDA kernels and downloads the models, so it is slow. Later starts reuse the cache. Then send requests:
-
-```bash
-curl http://127.0.0.1:8100/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"m","messages":[{"role":"user","content":"Hello!"}],"temperature":0,"max_tokens":128}'
-```
-
-For prefix caching to help, send the **same** conversation prefix again (an unchanged system prompt and history, then the new message). Reordering or editing earlier turns invalidates the cached part after the edit.
 
 ## Known limits
 

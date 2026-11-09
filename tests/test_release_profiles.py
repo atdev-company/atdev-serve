@@ -123,5 +123,29 @@ class Profiles(unittest.TestCase):
         extra,pe=self.launch('serve.sh','c1m','--port','9999',NO_WARMUP='1');self.assertEqual(extra.returncode,0,extra.stderr)
         self.assertIn('9999',pe['argv'])
 
+    DOCKER={'c1m':'c1m','c1':'c1m','c1s':'c1s','c1-single':'c1s','c1s-accuracy':'acc','c1-accuracy':'acc','c32m':'c32m','c32':'c32m','c32s':'c32s','c32-single':'c32s'}
+
+    def test_docker_entrypoint_names_and_old_aliases_dispatch_like_serve_sh(self):
+        for name,target in self.DOCKER.items():
+            ov=dict(ATDEV_HOME=str(ROOT),NO_WARMUP='1',HADW='/tmp/h.safetensors')
+            a,pa=self.launch('docker/entrypoint.sh',name,**ov)
+            b,pb=self.launch('serve_c1_accuracy.sh',**ov) if target=='acc' else self.launch('serve.sh',target,**ov)
+            self.assertEqual(a.returncode,0,(name,a.stderr));self.assertEqual(b.returncode,0,b.stderr);self.assertEqual(pa,pb,name)
+        extra,pe=self.launch('docker/entrypoint.sh','c1m','--port','9999',ATDEV_HOME=str(ROOT),NO_WARMUP='1');self.assertIn('9999',pe['argv'])
+
+    def test_compose_profiles_map_to_the_intended_entrypoint_argument(self):
+        try:import yaml
+        except ImportError:self.skipTest('PyYAML not installed')
+        svc=yaml.safe_load((ROOT/'docker-compose.yml').read_text())['services']
+        seen={}
+        for name,conf in svc.items():
+            for prof in conf['profiles']:seen[prof]=conf['command'][0]
+        expected={'c1m':'c1m','c1':'c1m','c1s':'c1s','c1-single':'c1s','c1s-accuracy':'c1s-accuracy','c1-accuracy':'c1s-accuracy',
+                  'c32m':'c32m','c32':'c32m','c32s':'c32s','c32-single':'c32s'}
+        self.assertEqual(seen,expected)
+        for arg in set(seen.values()):self.assertIn(arg,self.DOCKER)  # every command is a name the entrypoint dispatches
+        dockerfile=(ROOT/'docker'/'Dockerfile').read_text()
+        self.assertIn('COPY serve.sh ',dockerfile);self.assertIn('chmod +x serve.sh ',dockerfile);self.assertIn('CMD ["c1m"]',dockerfile)
+
 
 if __name__=='__main__':unittest.main()

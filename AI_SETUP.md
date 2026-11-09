@@ -131,10 +131,10 @@ GPUs: judge P2 / P4 only by the row for the chosen index.
 (venv)**, which requires P8, P9 and P10 to pass.
 
 **Choose the stack.** Use the decision guide at the top. Set exactly one of `STACK=c1m`, `STACK=c1s`, `STACK=c1s-accuracy`, `STACK=c32m`, `STACK=c32s`. Docker uses the compose profile with the matching name:
-`c1m` -> `c1`, `c1s` -> `c1-single`, `c1s-accuracy` -> `c1-accuracy`, `c32m` -> `c32`, `c32s` -> `c32-single`; set `COMPOSE_PROFILE` accordingly:
+Docker uses the compose profile of the same name (the older names `c1`, `c1-single`, `c1-accuracy`, `c32`, `c32-single` still work as aliases); set `COMPOSE_PROFILE`:
 
 ```bash
-case "$STACK" in c1m) COMPOSE_PROFILE=c1;; c1s) COMPOSE_PROFILE=c1-single;; c1s-accuracy) COMPOSE_PROFILE=c1-accuracy;; c32m) COMPOSE_PROFILE=c32;; c32s) COMPOSE_PROFILE=c32-single;; *) echo "bad STACK"; exit 2;; esac
+case "$STACK" in c1m|c1s|c1s-accuracy|c32m|c32s) COMPOSE_PROFILE=$STACK;; *) echo "bad STACK"; exit 2;; esac
 ```
 
 The up-to-14.2x headline belongs only to c1s; the multi-turn speedups (up to 3.77x for c1m, 1.58x for c32m) are full-stack results measured on scripted conversations; inspect [docs/ACCURACY.md](docs/ACCURACY.md) and [docs/MULTITURN.md](docs/MULTITURN.md) for all score and speed differences.

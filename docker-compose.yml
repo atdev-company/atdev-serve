@@ -1,8 +1,10 @@
-# One-command start:
-#   docker compose --profile c1 up --build     # single-user stack, multiturn profile (http://127.0.0.1:8100)
-#   docker compose --profile c1-single up --build   # single-user stack, previous launch (no prefix caching)
-#   docker compose --profile c32 up --build    # 32-concurrent stack, multiturn profile (http://127.0.0.1:8100)
-#   docker compose --profile c32-single up --build   # 32-concurrent stack, previous launch (no prefix caching)
+# One-command start (http://127.0.0.1:8100); pick one profile:
+#   docker compose --profile c1m  up --build   # 1 client, multi-turn
+#   docker compose --profile c1s  up --build   # 1 client, single-turn
+#   docker compose --profile c32m up --build   # 32 clients, multi-turn
+#   docker compose --profile c32s up --build   # 32 clients, single-turn
+#   docker compose --profile c1s-accuracy up --build   # c1s without the 3-bit overlay
+# The old profile names (c1, c1-single, c1-accuracy, c32, c32-single) still work and start the same service.
 # Env (optional, e.g. in a .env file next to this file):
 #   ATDEV_GPU   host GPU index to use (default 0)      ATDEV_PORT  host port (default 8100)
 #   HF_TOKEN    Hugging Face token, only if your network/account needs one
@@ -29,27 +31,26 @@ x-atdev: &atdev
             capabilities: [gpu]
 
 services:
-  atdev-c1:
+  atdev-c1m:
     <<: *atdev
-    profiles: ["c1"]
-    command: ["c1"]
-  atdev-c1-single:
+    profiles: ["c1m", "c1"]
+    command: ["c1m"]
+  atdev-c1s:
     <<: *atdev
-    profiles: ["c1-single"]
-    command: ["c1-single"]
-  atdev-c1-accuracy:
+    profiles: ["c1s", "c1-single"]
+    command: ["c1s"]
+  atdev-c1s-accuracy:
     <<: *atdev
-    profiles: ["c1-accuracy"]
-    command: ["c1-accuracy"]
-  atdev-c32:
+    profiles: ["c1s-accuracy", "c1-accuracy"]
+    command: ["c1s-accuracy"]
+  atdev-c32m:
     <<: *atdev
-    profiles: ["c32"]
-    command: ["c32"]
-
-  atdev-c32-single:
+    profiles: ["c32m", "c32"]
+    command: ["c32m"]
+  atdev-c32s:
     <<: *atdev
-    profiles: ["c32-single"]
-    command: ["c32-single"]
+    profiles: ["c32s", "c32-single"]
+    command: ["c32s"]
 
 volumes:
   hf-cache:

@@ -59,18 +59,20 @@ You do not need CUDA or Python on the host, only Docker with GPU support.
 ```bash
 git clone https://github.com/atdev-company/atdev-serve
 cd atdev-serve
-docker compose --profile c1 up --build          # original W3 fast profile
-# docker compose --profile c1-accuracy up --build  # W3 disabled
-# docker compose --profile c32 up --build          # Hadamard W4A4
+docker compose --profile c1m up --build           # c1m: 1 client, multi-turn
+# docker compose --profile c1s up --build         # c1s: 1 client, single-turn
+# docker compose --profile c1s-accuracy up --build  # c1s accuracy: W3 disabled
+# docker compose --profile c32m up --build        # c32m: 32 clients, multi-turn
+# docker compose --profile c32s up --build        # c32s: 32 clients, single-turn
 ```
 
 * The **first** run builds the image (it downloads about 10 GB of Python packages), downloads the
   models into a Docker volume, and compiles the CUDA kernels. Expect it to take
   10 minutes or more. Later runs start in a few minutes.
 * The server is ready when the log shows `Application startup complete`.
-* To use a GPU other than 0: `ATDEV_GPU=1 docker compose --profile c1 up`. To use another port:
+* To use a GPU other than 0: `ATDEV_GPU=1 docker compose --profile c1m up`. To use another port:
   `ATDEV_PORT=9000 ...`.
-* Stop with `Ctrl+C` or `docker compose --profile c1 down`. The volumes (`hf-cache`, `torch-ext`)
+* Stop with `Ctrl+C` or `docker compose --profile c1m down`. The volumes (`hf-cache`, `torch-ext`)
   keep the models and compiled kernels for next time.
 
 Without compose:
