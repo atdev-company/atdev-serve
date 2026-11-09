@@ -1,14 +1,13 @@
-# atdev-serve
+# atdev-serve: up to 14.2x single-turn, up to 9.0x multi-turn
 
 ## Qwen3.8-27B on one A100 80GB: faster agents, faster chat, lower energy per token
 
-> **Easy setup on vLLM: let your AI coding agent handle it.**
-> atdev-serve installs alongside unmodified **vLLM 0.31.0** and serves the familiar OpenAI-compatible API.
-> **[Open the AI installation & setup guide](https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md)**: give this link to your AI coding agent and ask it to install, launch your chosen profile, and verify the server on your GPU machine.
-> You can also follow the guide yourself. **Requires a supported NVIDIA GPU and CUDA environment**; the published profiles target an A100 80GB.
+> **Easy setup on vLLM.** atdev-serve installs alongside unmodified **vLLM 0.31.0** and serves the familiar OpenAI-compatible API; install it by hand in four lines or hand it to your AI coding agent: see **[Install](#install)**. Requires a supported NVIDIA GPU (the published profiles target an A100 80GB).
 
 **Multi-turn and agent workloads (new)**
 
+- **9.0x faster than the original bf16 model on stock vLLM at c1m:** the same agent trace (2 sessions x 38 turns, context growing to 111k tokens) takes **301.2 s** against 2,716.3 s (`max_tokens` 2048; 7.3x at 512, 5.1x at 128). Condition: bf16 is a single run of stock vLLM 0.31.0 (MTP k=3, prefix caching on) on the other A100 of the same machine; c1m is the median of 3 cold runs; full stack (W3 overlay + re-trained drafter).
+- **5.45x faster than the original bf16 model on stock vLLM at c32m:** 32 sessions x 7 turns (2k to 10.5k tokens) finish in **73.4 s** against 399.8 s at `max_tokens` 128 (4.8x at 512, 3.9x at 2048). Condition: bf16 is a single run whose smaller KV cache (185,586 tokens) gave a 0% prefix-cache hit rate, which is part of why the gap is large; c32m is the median of 3 cold runs; full stack (rotated W4A4 weights).
 - **3.77x faster agent conversations at c1m:** a scripted agent session (2 sessions x 38 turns, context growing to 111k tokens) finishes in **301.2 s** instead of 1,136.3 s on the fastest stock vLLM 0.31.0 setting we found. Condition: `max_tokens` 2048 per turn, cold start, median of 3 runs, same A100, full stack (W3 overlay + re-trained drafter). 2.32x at `max_tokens` 128 and 3.04x at 512.
 - **1.58x faster for 32 concurrent multi-turn sessions at c32m:** 199.1 s instead of 314.0 s (32 sessions x 7 turns, 2k to 10.5k tokens, `max_tokens` 2048, median of 3 cold runs, same GPU), 1,096 aggregate output tok/s. Full stack: rotated W4A4 weights.
 - **Long context on one GPU:** c1m serves a 131,072-token window (the trace above reaches 111k tokens) with prefix caching, so each turn prefills only what is new (cache hit rate 0.95).
@@ -65,6 +64,49 @@ switches off the 3-bit overlay and runs at 357.2 tok/s; see [Accuracy and valida
 | are not sure and have one user | `c1m` (it costs 3.6% on short unrelated prompts and is much faster whenever a prefix repeats) |
 
 Details and the reasoning are in [AI_SETUP.md](AI_SETUP.md) and the [profile comparison](#profile-comparison).
+
+## Install
+
+**Manual, in four lines** (Linux, one A100 80GB, NVIDIA driver for CUDA 13.0, CUDA 13.0 toolkit with `nvcc`, and Hugging Face access; Docker works too, see [Quick start](#quick-start)):
+
+```bash
+git clone https://github.com/atdev-company/atdev-serve && cd atdev-serve
+./install.sh && source atdev-env.sh      # checks the machine, creates .venv, installs vllm==0.31.0 + atdev-serve
+./serve.sh c1m                           # or c1s, c32m, c32s
+```
+
+The first start compiles kernels and downloads the models (12-16 minutes on our test machine). Everything else (preflight checks, Docker, environment variables, troubleshooting) is in [AI_SETUP.md](https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md) and [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+
+**Or let an AI coding agent do it.** Paste one of these into your agent (Claude Code, Codex, Cursor, ...), on the GPU machine:
+
+*c1m: one person with a coding agent or a long chat*
+
+```text
+Install atdev-serve on this machine and launch the c1m profile (one user, multi-turn). Follow https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md and use STACK=c1m.
+Verify that the server answers a chat request, then tell me the endpoint URL and any problems you ran into.
+```
+
+*c1s: one-shot calls with short, unrelated prompts*
+
+```text
+Install atdev-serve on this machine and launch the c1s profile (one user, single-turn). Follow https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md and use STACK=c1s.
+Verify that the server answers a chat request, then tell me the endpoint URL and any problems you ran into.
+```
+
+*c32m: a team or an agent fleet with growing conversations*
+
+```text
+Install atdev-serve on this machine and launch the c32m profile (32 clients, multi-turn). Follow https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md and use STACK=c32m.
+Verify that the server answers a chat request, then tell me the endpoint URL and any problems you ran into.
+```
+
+*c32s: batch jobs or API traffic of independent requests*
+
+```text
+Install atdev-serve on this machine and launch the c32s profile (32 clients, single-turn). Follow https://github.com/atdev-company/atdev-serve/blob/main/AI_SETUP.md and use STACK=c32s.
+Verify that the server answers a chat request, then tell me the endpoint URL and any problems you ran into.
+```
+
 
 ## Results at a glance
 
@@ -126,19 +168,23 @@ Wall-clock seconds for the whole scripted conversation, cold start, median of 3 
 
 **c1m, trace v5** (2 sessions x 38 turns, context 5k to 111k tokens, GPU1 of our test machine)
 
-| `max_tokens` | stock vLLM | c1m | speedup | c1m tok/s | stock tok/s | original bf16 + vLLM |
+| `max_tokens` | stock vLLM | c1m | speedup | c1m tok/s | stock tok/s | original bf16 + vLLM (c1m is faster by) |
 |---|---:|---:|---:|---:|---:|---:|
-| 128 | 268.6 s | **116.0 s** | **2.32x** | 82.2 | 34.7 | 593.4 s |
-| 512 | 623.1 s | **205.2 s** | **3.04x** | 159.4 | 52.0 | 1,497.5 s |
-| 2048 | 1,136.3 s | **301.2 s** | **3.77x** | 198.6 | 58.4 | 2,716.3 s |
+| 128 | 268.6 s | **116.0 s** | **2.32x** | 82.2 | 34.7 | 593.4 s (**5.12x**) |
+| 512 | 623.1 s | **205.2 s** | **3.04x** | 159.4 | 52.0 | 1,497.5 s (**7.30x**) |
+| 2048 | 1,136.3 s | **301.2 s** | **3.77x** | 198.6 | 58.4 | 2,716.3 s (**9.02x**) |
+
+The bf16 column is the original Qwen3.8-27B bf16 model on stock vLLM 0.31.0 (MTP k=3, prefix caching on): **a single run**, on the other A100 of the same machine as the c1m runs (all other arms ran on one GPU). Its KV cache holds 248,680 tokens at 131,072 context; its prefix-cache hit rate was 0.95, the same as the other arms. The multiples against bf16 are the largest multi-turn numbers here (9.02x at `max_tokens` 2048); against the fastest stock setting the multiples are 2.32x / 3.04x / 3.77x.
 
 **c32m, trace v5-c32** (32 sessions x 7 turns, 2k to 10.5k tokens)
 
-| `max_tokens` | stock vLLM | c32m | speedup | c32m tok/s | stock tok/s | original bf16 + vLLM |
+| `max_tokens` | stock vLLM | c32m | speedup | c32m tok/s | stock tok/s | original bf16 + vLLM (c32m is faster by) |
 |---|---:|---:|---:|---:|---:|---:|
-| 128 | 115.1 s | **73.4 s** | **1.57x** | 386.3 | 245.5 | 399.8 s |
-| 512 | 184.3 s | **117.6 s** | **1.57x** | 857.3 | 543.5 | 569.7 s |
-| 2048 | 314.0 s | **199.1 s** | **1.58x** | 1,096.1 | 719.2 | 771.8 s |
+| 128 | 115.1 s | **73.4 s** | **1.57x** | 386.3 | 245.5 | 399.8 s (**5.45x**) |
+| 512 | 184.3 s | **117.6 s** | **1.57x** | 857.3 | 543.5 | 569.7 s (**4.84x**) |
+| 2048 | 314.0 s | **199.1 s** | **1.58x** | 1,096.1 | 719.2 | 771.8 s (**3.88x**) |
+
+The bf16 column is the original Qwen3.8-27B bf16 model on stock vLLM 0.31.0 (MTP k=3, prefix caching on): **a single run** on the same GPU as the other arms. Its weights leave a KV cache of only 185,586 tokens, smaller than the working set of 32 sessions, so its prefix cache thrashed: **0% hit rate and 6 / 88 / 126 preemptions** at caps 128 / 512 / 2048. That is part of why the gap to bf16 is large (largest at `max_tokens` 128: 5.45x); against the fastest stock INT4 setting the multiples are 1.57x / 1.57x / 1.58x.
 
 **c32m, older trace v4** (32 sessions x 6 turns, prompts up to about 9k tokens; stock = fastest of FLASH_ATTN / TRITON_ATTN with MTP k=3). The first row set was measured on an earlier, unrotated C32 bundle
 (3 reps, GPU1); the rotated c32m bundle was measured at caps 128 / 512 only (2 reps, GPU0, so the ratios against the GPU1 stock numbers are indicative).
@@ -311,7 +357,7 @@ For prefix caching to help, send the **same** conversation prefix again (an unch
 
 ## How it works
 
-This section describes the single-turn stacks; the multi-turn additions are in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#the-multi-turn-profiles) and every technique with its measured effect and failure cases is in [docs/TECHNIQUES.md](docs/TECHNIQUES.md).
+The multi-turn profiles (c1m, c32m) add prefix caching and faster prefill on top of the same decode stacks; each is described in its own subsection below. The details are in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#the-multi-turn-profiles) and every technique with its measured effect and failure cases is in [docs/TECHNIQUES.md](docs/TECHNIQUES.md).
 
 One decode step has three parts. A cheap **drafter** guesses several next tokens. The 27B
 **target** model checks all the guesses in one forward pass (verification). Then the engine keeps
@@ -364,6 +410,59 @@ flowchart LR
 | W4A4 verify GEMMs (MarlinA4, `marlin_plus`, `fused_quant`) | model-side | 4-bit activations on the large verify GEMMs. The activation quantizers are fused into the preceding norm/SiLU kernels, and the GEMMs use split-K with a parallel reduction | about +7% at first, then many smaller tuning steps |
 | Int4 verify-head screen + exact rescoring (`vsplit_a4scr`) | model-side | An int4 W4A4 pass over all 248k `lm_head` rows picks 16 candidates per row, and those are rescored exactly in bf16. The head goes from 1.34 to 0.63 ms at M=96 | +2.2% |
 | Int4 MTP head + pruning (`mtp_w4`, `mtp_prune`) | model-side | Smaller drafter weights. Pass 1 runs only the rows that are needed | +1.8% |
+
+### c1m (1 client, multi-turn): keep the conversation, prefill only what is new
+
+A turn of an agent or a chat resends the whole history plus a new message. c1m looks up the longest cached prefix, prefills only the new tokens, decodes with the same 16-node tree as c1s, and saves state for the next turn.
+
+```mermaid
+flowchart LR
+    A["New turn<br/>history + new message"] --> B["Prefix-cache lookup<br/>longest cached prefix:<br/>KV blocks + GDN state at an aligned position"]
+    B --> C["Prefill only the new tokens<br/>FlashAttention-2 / FlashInfer<br/>W3 int8 GEMMs, fused epilogues"]
+    C --> D["Decode<br/>16-node tree verification<br/>(as c1s)"]
+    D --> E["Save state for the next turn<br/>KV blocks + GDN checkpoint<br/>at the end of the prompt"]
+    E --> A
+```
+
+| technique | type | what it does | measured effect |
+|---|---|---|---|
+| Prefix cache for the tree stack (`ATDEV_DFT_APC`, `gdn_ss_align`) | engine | The GDN state of an aligned position is rebuilt from the single-state slot plus the token log, and the tree verifier re-bases its state tables, so the DFlash tree works with vLLM's hybrid prefix cache | cache hit rate 0.95 on the 111k-token trace (stock vLLM with prefix caching reaches the same rate); not separately timed |
+| Fine-grained hits for the drafter's sliding-window layers (`ATDEV_SWA_FINE`) | engine | 16-token hit granularity instead of block granularity | part of the 0.95 hit rate; not separately measured |
+| FlashAttention-2 prefill (`ATDEV_PF_FA2`) | engine | Prefill and mixed steps use FA2 instead of the Triton unified kernel (rounding-level difference) | 3.1-3.8x faster than the Triton kernel on this attention shape (microbenchmark) |
+| FlashInfer split-KV for short tails (`ATDEV_PF_FA2_FI`) | engine | The 2..299-token steps at long context use FlashInfer's balanced split-KV; a ring of pinned plan buffers removes an asynchronous-copy race | 0.3-4 ms per layer against 4.6-9 ms for FA2 at 100k context; about 1.2% of the trace |
+| Int8 prefill GEMM for the W3 weights (`ATDEV_W3_I8`, `ATDEV_W3_DQ`) | model-side | Large chunks run the W3 weights dequantized once to int8 on the int8 tensor cores (activation quantization) | part of the bundle; not separately measured |
+| Prefill glue fusion (`ATDEV_PF_FUSE`, `ATDEV_PF_GLUE`) | engine | SiLU-mul and residual-RMSNorm fused with the int8 quantization | removes about 380 ms of 1.56 s for a 3.8k-token prefill (profile) |
+| Small-chunk GDN kernel (`ATDEV_GDN_SMALL`) | engine | Recurrent kernel for GDN chunks of 32 tokens or less (rounding-level difference) | not separately measured |
+| Tree-attention head split for long context (`ATDEV_TREE_HSPL=auto`) | engine | One CTA per KV head | 16 layers at 100k context: 11.7 -> 5.3 ms |
+| Tokenization cache (`ATDEV_TOK_CACHE`) | engine | Per-segment tokenization of the growing history | not separately measured |
+| Start-up warmup (`atdev_serve.warmup`) | engine | Synthetic conversations compile the Triton kernels before the first request | a 3-turn probe: 9.5 s -> 4.8 s with an empty Triton cache |
+
+All together, c1m is 2.32x / 3.04x / 3.77x faster than the fastest stock setting on the 111k-token trace (`max_tokens` 128 / 512 / 2048). Optional, off by default: an end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`) that also saves the server's own reply (neutral at c=1 on the measured traces).
+
+### c32m (32 clients, multi-turn): shared prefixes across 32 growing conversations
+
+Same cycle for 32 sessions at once, on the MTP stack: lookup, prefill of the new tokens (mixed with the other sessions' decode rows in the same step), decode, save.
+
+```mermaid
+flowchart LR
+    A["32 sessions<br/>each: history + new message"] --> B["Prefix-cache lookup<br/>per session<br/>(shared-prefix checkpoint)"]
+    B --> C["Prefill of the new tokens<br/>FlashAttention-2 / FlashInfer<br/>4-bit prefill GEMM on rotated weights"]
+    C --> D["Decode<br/>MTP k=3, confidence-scheduled<br/>96-row verify budget (as c32s)"]
+    D --> E["Save state for the next turn<br/>KV blocks + GDN checkpoints"]
+    E --> A
+```
+
+| technique | type | what it does | measured effect |
+|---|---|---|---|
+| Prefix cache for MTP (`ATDEV_GDN_SS_ALIGN`, shared-prefix checkpoint) | engine | Single-state GDN verify under `--mamba-cache-mode align` | cache hit rate 0.76 on the 32-session trace; not separately timed |
+| FlashAttention-2 prefill + tuned Marlin configs for M > 128 (`ATDEV_PF_FA2`, `ATDEV_PF_MP`) | engine | Faster prefill attention and GEMM launch configs (FA2: rounding-level difference) | 1.16x / 1.26x over stock on the 32 x 6 trace at caps 128 / 512, before the 4-bit prefill GEMM |
+| FlashInfer attention for the prefill rows of mixed steps (`ATDEV_PF_FI`) | engine | One host plan per step; decode rows stay on the CUDA varlen kernel (planning decode rows too produced wrong output) | -5.6% / -3.8% wall at caps 128 / 512 |
+| 4-bit prefill GEMM on rotated weights (`ATDEV_PF_A4`, fused rotation, activation clip 0.9, layer 0 on 8-bit) | model-side | Prefill chunks use the int4 tensor cores; the rotation is fused with the activation quantization | on the unrotated stack it saved 11-20% of the v5-c32 wall time; on the rotated stack the speed stays within 0.5% of that bundle's, with perplexity 7.37 where the unrotated 4-bit prefill gave 7.96 |
+| Hadamard-rotated weights (sidecar) | model-side | The block-Hadamard rotation removes the activation outliers that W4A4 cannot represent | needed for the 4-bit prefill GEMM above; shared with c32s |
+| Tokenization cache (`ATDEV_TOK_CACHE`) | engine | Per-segment tokenization of the growing history | neutral on the C32 trace |
+| Start-up warmup with 32-way waves | engine | Compiles the batch-shape kernels before the first request | removed a +5% first-run penalty |
+
+All together, c32m is 1.57x / 1.57x / 1.58x faster than the fastest stock setting on the v5-c32 trace. Optional, off by default: the end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`: 3-12% faster on live conversations, 1.3-2.7% slower where replies cannot be reused, 3% more GPU memory).
 
 More detail, the step-time breakdown and the full milestone history are in
 [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
