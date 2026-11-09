@@ -32,10 +32,10 @@ Four profiles; the name is **c** (concurrent clients it is tuned for) + **m** (m
 
 | if you... | run | what you get |
 |---|---|---|
-| use a coding agent, a long chat or document Q&A with one conversation that keeps growing | **c1m** (`./serve.sh c1m`) | prefix caching and a 131,072-token window: 2.3x-3.8x faster than the best stock vLLM on a 111k-token agent trace; about 394 tokens/s for a single request ([MULTITURN.md](MULTITURN.md)) |
+| use a coding agent, a long chat or document Q&A with one conversation that keeps growing | **c1m** (`./serve.sh c1m`) | prefix caching and a 131,072-token window: 2.4x-3.4x the output tok/s of the best stock vLLM on a 111k-token agent trace; about 394 tokens/s for a single request ([MULTITURN.md](MULTITURN.md)) |
 | make one-shot calls with short, unrelated prompts | **c1s** (`./serve.sh c1s`) | about 408.9 tokens/s per request (vs 196.5 with the best stock vLLM settings), no prefix caching, 8,192-token window, the largest KV cache |
 | prioritize measured broad accuracy over the maximum c1s speed | **c1s accuracy** (`./serve_c1_accuracy.sh`) | W3 disabled, same drafter; 357.17 tok/s; see [all scores](ACCURACY.md) |
-| serve a team or a fleet of agents whose conversations grow | **c32m** (`./serve.sh c32m`) | Hadamard W4A4 with prefix caching: 1.57x-1.58x faster than the best stock vLLM on 32-session traces ([MULTITURN.md](MULTITURN.md)) |
+| serve a team or a fleet of agents whose conversations grow | **c32m** (`./serve.sh c32m`) | Hadamard W4A4 with prefix caching: 1.52x-1.58x the output tok/s of the best stock vLLM on 32-session traces ([MULTITURN.md](MULTITURN.md)) |
 | run batch jobs or an API of independent requests | **c32s** (`./serve.sh c32s`) | Hadamard W4A4 only: 2,688.13 aggregate tokens/s in one run at c=32 (vs historical 1,757.1 best stock vLLM) |
 
 The 14.2x / 2.08x maximum-speed claims belong only to C1 fast with `--profile single`. C1 accuracy changes only the W3 path and reuses the same drafter; C32 requires a Hadamard sidecar, not an external drafter. [Full accuracy, speed and limitations](ACCURACY.md).

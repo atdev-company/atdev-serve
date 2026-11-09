@@ -37,11 +37,13 @@ All numbers on this page are wall-clock times of a fixed, scripted conversation 
 
 ## C1: trace v5, 2 sessions up to 111k tokens
 
-| Output cap per turn | stock vLLM (fastest) | atdev-serve `multiturn` | speedup | original bf16 + vLLM |
-|---|---:|---:|---:|---:|
-| 128 tokens | 268.6 s (34.7 tok/s) | **116.0 s (82.2 tok/s)** | **2.32x** | 593.4 s (15.4 tok/s) |
-| 512 tokens | 623.1 s (52.0 tok/s) | **205.2 s (159.4 tok/s)** | **3.04x** | 1,497.5 s (20.8 tok/s) |
-| 2048 tokens | 1,136.3 s (58.4 tok/s) | **301.2 s (198.6 tok/s)** | **3.77x** | 2,716.3 s (24.1 tok/s) |
+| Output cap per turn | c1m tok/s | stock tok/s | c1m vs stock | bf16 tok/s | c1m vs bf16 | wall time: c1m / stock / bf16 | time ratio vs stock / bf16 |
+|---|---:|---:|---:|---:|---:|---|---|
+| 128 | **82.2** | 34.7 | **2.37x** | 15.4 | **5.32x** | 116.0 s / 268.6 s / 593.4 s | 2.32x / 5.12x |
+| 512 | **159.4** | 52.0 | **3.07x** | 20.8 | **7.65x** | 205.2 s / 623.1 s / 1,497.5 s | 3.04x / 7.30x |
+| 2048 | **198.6** | 58.4 | **3.40x** | 24.1 | **8.23x** | 301.2 s / 1,136.3 s / 2,716.3 s | 3.77x / 9.02x |
+
+The speed multiples are ratios of output tokens per second over the whole run (prefill included); the time ratios can differ because the runs emit different numbers of tokens (c1m at `max_tokens` 2048: 59,821 tokens for c1m, 66,346 for stock, 65,536 for bf16).
 
 Medians of 3 cold repetitions (spread 0.1-0.4 s for atdev-serve, 1.2 s for stock); tok/s is generated tokens
 divided by the wall time of the whole trace, prefill included. The bf16 column is one repetition on the other
@@ -56,11 +58,13 @@ dequantized prefill weights take GPU memory that the previous multi-turn build l
 
 `trace v5-c32` (the headline family for C32), medians of 3 cold repetitions:
 
-| Output cap | stock vLLM (fastest) | atdev-serve `multiturn` | speedup | original bf16 + vLLM |
-|---|---:|---:|---:|---:|
-| 128 tokens | 115.1 s (245.5 tok/s) | **73.4 s (386.3 tok/s)** | **1.57x** | 399.8 s |
-| 512 tokens | 184.3 s (543.5 tok/s) | **117.6 s (857.3 tok/s)** | **1.57x** | 569.7 s |
-| 2048 tokens | 314.0 s (719.2 tok/s) | **199.1 s (1,096.1 tok/s)** | **1.58x** | 771.8 s |
+| Output cap | c32m tok/s | stock tok/s | c32m vs stock | bf16 tok/s | c32m vs bf16 | wall time: c32m / stock / bf16 | time ratio vs stock / bf16 |
+|---|---:|---:|---:|---:|---:|---|---|
+| 128 | **386.3** | 245.5 | **1.57x** | 71.0 | **5.44x** | 73.4 s / 115.1 s / 399.8 s | 1.57x / 5.45x |
+| 512 | **857.3** | 543.5 | **1.58x** | 175.6 | **4.88x** | 117.6 s / 184.3 s / 569.7 s | 1.57x / 4.84x |
+| 2048 | **1,096.1** | 719.2 | **1.52x** | 293.5 | **3.73x** | 199.1 s / 314.0 s / 771.8 s | 1.58x / 3.88x |
+
+The speed multiples are ratios of output tokens per second over the whole run (prefill included); the time ratios can differ because the runs emit different numbers of tokens (c32m at `max_tokens` 2048: 218,240 tokens for c32m, 225,850 for stock, 226,530 for bf16).
 
 `trace v4` (32 sessions x 6 turns, prompts up to about 9k tokens, kept for continuity with earlier measurements; these three rows were measured on the previous, unrotated C32 bundle and are kept for reference, the v4 numbers of the Hadamard bundle are 54.6 / 78.8 s at caps 128 / 512 on GPU0):
 
@@ -71,7 +75,7 @@ dequantized prefill weights take GPU memory that the previous multi-turn build l
 | 2048 tokens | 189.2 s | **130.5 s** | **1.45x** |
 
 The bf16 original has room for only 185,586 KV tokens next to its weights, so with 32 sessions of 10k tokens its prefix
-cache thrashes (hit rate 0.0, 6-126 preemptions); that is why it is 4-5.5x slower than atdev-serve here.
+cache thrashes (hit rate 0.0, 6-126 preemptions); that is why its whole-trace time is 3.9-5.5x longer than atdev-serve's here (3.7-5.4x lower output tok/s).
 The C32 profile uses a 4-bit prefill GEMM on rotated weights; see [Accuracy](#accuracy-of-the-multi-turn-profiles).
 
 ## Replies the server generated itself ("live" conversations)
@@ -133,7 +137,7 @@ aligned to the client; +-a few seconds). C1 trace v5, 3 repetitions each:
 | 512 | 435 W / 509 W | 2.73 | 89.4 kJ | 359 W / 505 W | 6.9 | 223.5 kJ |
 | 2048 | 442 W / 500 W | 2.22 | 133.0 kJ | 356 W / 508 W | 6.1 | 405.0 kJ |
 
-atdev-serve draws 15-25% more power on average (the GPU is busier) but finishes 2.3-3.8x sooner, so a run
+atdev-serve draws 15-25% more power on average (the GPU is busier) but finishes 2.3-3.8x sooner in wall time, so a run
 uses 0.49x / 0.40x / 0.33x the energy. GPU temperature stayed at 71-73 C and the SM clock at 1410 MHz in both
 (a power-cap throttle flag appeared briefly at caps 512 and 2048 for atdev-serve, clock dips to 1395 MHz). Single-request
 decoding (96 prompts): `multiturn` 426-431 W, 1.20 J/token; `single` 437-439 W, 1.18 J/token; stock vLLM 328 W, 1.80 J/token.

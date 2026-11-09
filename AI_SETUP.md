@@ -27,9 +27,9 @@ If the user is unsure and has one user: `c1m`. It costs about 3.6% on short unre
 
 Measured facts to base the choice on (all on one A100 80GB, vLLM 0.31.0, greedy, full stack; details in [README.md](README.md) and [docs/MULTITURN.md](docs/MULTITURN.md)):
 
-* c1m: a 2 x 38-turn agent trace up to 111k tokens takes 116.0 / 205.2 / 301.2 s at `max_tokens` 128 / 512 / 2048 against 268.6 / 623.1 / 1,136.3 s for the fastest stock vLLM setting (2.32x / 3.04x / 3.77x).
+* c1m: a 2 x 38-turn agent trace up to 111k tokens runs at 82.2 / 159.4 / 198.6 output tok/s at `max_tokens` 128 / 512 / 2048 against 34.7 / 52.0 / 58.4 for the fastest stock vLLM setting (2.37x / 3.07x / 3.40x; whole-trace wall time 116.0 / 205.2 / 301.2 s against 268.6 / 623.1 / 1,136.3 s).
 * c1s: 408.9 tok/s mean decode per request, 2.08x the best stock vLLM (196.5).
-* c32m: 32 concurrent 7-turn sessions take 73.4 / 117.6 / 199.1 s against 115.1 / 184.3 / 314.0 s (1.57x / 1.57x / 1.58x).
+* c32m: 32 concurrent 7-turn sessions reach 386.3 / 857.3 / 1,096.1 aggregate output tok/s against 245.5 / 543.5 / 719.2 for the fastest stock setting (1.57x / 1.58x / 1.52x; wall time 73.4 / 117.6 / 199.1 s against 115.1 / 184.3 / 314.0 s).
 * c32s: 2,688.1 aggregate output tok/s, 1.53x the best stock vLLM (single measured run).
 * KV cache: c1m holds about 284,600 tokens at its 131,072-token window; c1s about 542,000 (indicative); c32m about 514,800 at 16,384.
 
@@ -54,7 +54,7 @@ Each setup is a separate, self-contained recipe: pick **one**, set `STACK` to it
 ### Setup c32m: many users, multi-turn (`STACK=c32m`)
 
 * **Fits:** up to 32 conversations in flight that each grow (shared assistant, agent fleet). 16,384-token window, prefix caching for MTP with the shared-prefix checkpoint.
-* **What you get:** 1.57x-1.58x faster than the best stock vLLM on 32 concurrent 7-turn sessions, a start-up warmup with 32-way waves.
+* **What you get:** 1.52x-1.58x the output tok/s of the best stock vLLM on 32 concurrent 7-turn sessions, a start-up warmup with 32-way waves.
 * **Downloads:** INT4 target (19 GB) + the Hadamard sidecar (about 12.5 GB) from `atdev-company/Qwen3.8-27B-atdev-c32`. No separate drafter.
 * **Caveats:** IFEval prompt strict is 2.0 points below stock INT4 (run-to-run spread up to about 4 points); outputs are not byte-identical to stock; greedy decoding only. `ATDEV_EOR_CKPT=1` (off by default) helps live conversations at the cost of 3% more GPU memory.
 
@@ -137,7 +137,7 @@ Docker uses the compose profile of the same name (the older names `c1`, `c1-sing
 case "$STACK" in c1m|c1s|c1s-accuracy|c32m|c32s) COMPOSE_PROFILE=$STACK;; *) echo "bad STACK"; exit 2;; esac
 ```
 
-The up-to-14.2x headline belongs only to c1s; the multi-turn speedups (up to 3.77x for c1m, 1.58x for c32m) are full-stack results measured on scripted conversations; inspect [docs/ACCURACY.md](docs/ACCURACY.md) and [docs/MULTITURN.md](docs/MULTITURN.md) for all score and speed differences.
+The up-to-14.2x headline belongs only to c1s; the multi-turn speedups (up to 3.40x for c1m and 1.58x for c32m over the fastest stock setting, in output tok/s) are full-stack results measured on scripted conversations; inspect [docs/ACCURACY.md](docs/ACCURACY.md) and [docs/MULTITURN.md](docs/MULTITURN.md) for all score and speed differences.
 
 ## Phase 2A: install with Docker
 

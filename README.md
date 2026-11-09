@@ -1,4 +1,4 @@
-# atdev-serve: Qwen3.8-27B up to 14.2x single-turn, up to 9.0x multi-turn
+# atdev-serve: Qwen3.8-27B up to 14.2x single-turn, up to 8.2x multi-turn
 
 ## Qwen3.8-27B on one A100 80GB: faster agents, faster chat, lower energy per token
 
@@ -8,10 +8,10 @@
 
 **Multi-turn and agent workloads (new; on GitHub since 2026-11-09)**
 
-- **9.0x faster than the original bf16 model on stock vLLM at c1m:** the same agent trace (2 sessions x 38 turns, context growing to 111k tokens) takes **301.2 s** against 2,716.3 s (`max_tokens` 2048; 7.3x at 512, 5.1x at 128). Condition: bf16 is a single run of stock vLLM 0.31.0 (MTP k=3, prefix caching on) on the other A100 of the same machine; c1m is the median of 3 cold runs; full stack (W3 overlay + re-trained drafter).
-- **5.45x faster than the original bf16 model on stock vLLM at c32m:** 32 sessions x 7 turns (2k to 10.5k tokens) finish in **73.4 s** against 399.8 s at `max_tokens` 128 (4.8x at 512, 3.9x at 2048). Condition: bf16 is a single run whose smaller KV cache (185,586 tokens) gave a 0% prefix-cache hit rate, which is part of why the gap is large; c32m is the median of 3 cold runs; full stack (rotated W4A4 weights).
-- **3.77x faster agent conversations at c1m:** a scripted agent session (2 sessions x 38 turns, context growing to 111k tokens) finishes in **301.2 s** instead of 1,136.3 s on the fastest stock vLLM 0.31.0 setting we found. Condition: `max_tokens` 2048 per turn, cold start, median of 3 runs, same A100, full stack (W3 overlay + re-trained drafter). 2.32x at `max_tokens` 128 and 3.04x at 512.
-- **1.58x faster for 32 concurrent multi-turn sessions at c32m:** 199.1 s instead of 314.0 s (32 sessions x 7 turns, 2k to 10.5k tokens, `max_tokens` 2048, median of 3 cold runs, same GPU), 1,096 aggregate output tok/s. Full stack: rotated W4A4 weights.
+- **8.2x faster than the original bf16 model on stock vLLM at c1m:** the same agent trace (2 sessions x 38 turns, context growing to 111k tokens) runs at **198.6 vs 24.1 output tokens/s** at `max_tokens` 2048 (5.3x at 128, 7.7x at 512; whole-trace wall time 301.2 s vs 2,716.3 s). Condition: bf16 is a single run of stock vLLM 0.31.0 (MTP k=3, prefix caching on) on the other A100 of the same machine; c1m is the median of 3 cold runs; full stack (W3 overlay + re-trained drafter).
+- **5.44x faster than the original bf16 model on stock vLLM at c32m:** 32 sessions x 7 turns (2k to 10.5k tokens) reach **386.3 vs 71.0 aggregate output tokens/s** at `max_tokens` 128 (4.9x at 512, 3.7x at 2048; wall time 73.4 s vs 399.8 s at 128). Condition: bf16 is a single run whose smaller KV cache (185,586 tokens) gave a 0% prefix-cache hit rate, which is part of why the gap is large; c32m is the median of 3 cold runs; full stack (rotated W4A4 weights).
+- **3.40x faster agent conversations at c1m than the fastest stock setting:** **198.6 vs 58.4 output tokens/s** on the same trace at `max_tokens` 2048 (2.37x at 128, 3.07x at 512; whole-trace wall time 301.2 s vs 1,136.3 s). Condition: cold start, median of 3 runs, same A100, fastest stock vLLM 0.31.0 setting we found, full stack (W3 overlay + re-trained drafter).
+- **1.58x faster for 32 concurrent multi-turn sessions at c32m than the fastest stock setting:** **857.3 vs 543.5 aggregate output tokens/s** at `max_tokens` 512 (1.57x at 128, 1.52x at 2048; wall time 117.6 s vs 184.3 s at 512). Same trace and GPU, median of 3 cold runs, full stack (rotated W4A4 weights).
 - **Long context on one GPU:** c1m serves a 131,072-token window (the trace above reaches 111k tokens) with prefix caching, so each turn prefills only what is new (cache hit rate 0.95).
 - **Less energy per token:** at `max_tokens` 2048 the c1m run used 133 kJ against 405 kJ for stock vLLM (2.22 vs 6.10 J per output token, 0.33x); c32m used 76.5 kJ against 121.4 kJ (0.35 vs 0.54 J/token, 0.63x). NVML, same GPU.
 - **Output-identical consolidation:** the release tree reproduces the frozen research run of c1m token for token (all 76 turns identical at `max_tokens` 128 and 512) at the same speed (115.0 / 204.4 s against 116.0 / 205.2 s).
@@ -43,12 +43,12 @@ Use the profile tuned for your workload. Name = `c` + number of concurrent clien
 
 | Profile | Best for | vs bf16 on stock vLLM | Run |
 |---|---|---|---|
-| **c1m** | One user: coding agent, long chat, document Q&A | **9.0x** | `./serve.sh c1m` |
+| **c1m** | One user: coding agent, long chat, document Q&A | **8.2x** | `./serve.sh c1m` |
 | **c1s** | One user: one-shot calls, short unrelated prompts | **14.2x** | `./serve.sh c1s` |
-| **c32m** | 32 users: team assistant, agent fleet | **5.45x** | `./serve.sh c32m` |
+| **c32m** | 32 users: team assistant, agent fleet | **5.44x** | `./serve.sh c32m` |
 | **c32s** | 32 users: batch jobs, API of independent requests | **4.0x** | `./serve.sh c32s` |
 
-Largest measured multiples: c1m at `max_tokens` 2048, c32m at `max_tokens` 128. Not sure and one user? Use `c1m`. Full details: [profile comparison](#profile-comparison).
+Largest measured multiples (output tok/s ratios): c1m at `max_tokens` 2048, c32m at `max_tokens` 128. Not sure and one user? Use `c1m`. Full details: [profile comparison](#profile-comparison).
 
 ## Install
 
@@ -128,10 +128,9 @@ the longest output cap, where the gain is largest); single-turn charts show the 
   <img alt="c32m: aggregate output tokens per second over the whole trace at max_tokens 2048: bf16 stock vLLM 293.5, fastest stock INT4 719.2, atdev-serve c32m 1096.1 (1.52x the fastest stock by tok/s)" src="docs/img/speed_c32m.svg">
 </picture>
 
-The multi-turn charts show output tokens per second over the whole run (prefill included), so their multiples are tok/s ratios: c1m 3.40x vs the fastest stock setting and 8.2x vs bf16; c32m 1.52x and 3.7x. The multiples quoted in the text and tables (3.77x / 9.02x and 1.58x / 3.88x) are based on total completion time and differ slightly because the arms emitted slightly different numbers of tokens.
+The multi-turn charts show output tokens per second over the whole run (prefill included), so their multiples are tok/s ratios: c1m 3.40x vs the fastest stock setting and 8.2x vs bf16; c32m 1.52x and 3.7x. The arms emitted slightly different numbers of tokens, so the wall-time ratios in the detail tables differ a little.
 
-The c32m headline is the final c32m bundle's 3-repetition run on trace v5-c32 (median 199.1 s; its three repetitions were 193.1, 199.1 and 199.5 s, mean 197.2 s, which is 1.59x). We quote the median everywhere in this repository so every table uses one rule.
-The fastest stock setting at `max_tokens` 2048 is INT4 with int8 activations, MTP k=3 and `TRITON_ATTN` (median 314.0 s).
+The c32m numbers are the final c32m bundle's 3-repetition run on trace v5-c32 (medians; at `max_tokens` 2048 the three repetitions took 193.1, 199.1 and 199.5 s, mean 197.2 s). The fastest stock setting at `max_tokens` 512 and 2048 is INT4 with int8 activations, MTP k=3 and `TRITON_ATTN`; at 128 it is the same with the default attention backend.
 
 ### c1s: 1 client, single-turn
 
@@ -166,28 +165,28 @@ Two kinds of results are reported separately:
 
 ### Speed by output length (`max_tokens`)
 
-Wall-clock seconds for the whole scripted conversation, cold start, median of 3 runs, same GPU for both arms. "Stock" is the fastest stock vLLM 0.31.0 setting we found for that cell, with prefix caching on
-(c1: INT4, default attention backend, no speculative decoding; c32: INT4, int8 activations, MTP k=3, the faster of `TRITON_ATTN` and the default backend). tok/s = generated tokens / wall time, prefill included.
+Output tokens per second over the whole scripted conversation (prefill included), with the wall-clock seconds and time ratios alongside; cold start, median of 3 runs, same GPU for both arms. "Stock" is the fastest stock vLLM 0.31.0 setting we found for that cell, with prefix caching on
+(c1: INT4, default attention backend, no speculative decoding; c32: INT4, int8 activations, MTP k=3, the faster of `TRITON_ATTN` and the default backend). tok/s = generated tokens / wall time.
 
 **c1m, trace v5** (2 sessions x 38 turns, context 5k to 111k tokens, GPU1 of our test machine)
 
-| `max_tokens` | stock vLLM | c1m | speedup | c1m tok/s | stock tok/s | original bf16 + vLLM (c1m is faster by) |
-|---|---:|---:|---:|---:|---:|---:|
-| 128 | 268.6 s | **116.0 s** | **2.32x** | 82.2 | 34.7 | 593.4 s (**5.12x**) |
-| 512 | 623.1 s | **205.2 s** | **3.04x** | 159.4 | 52.0 | 1,497.5 s (**7.30x**) |
-| 2048 | 1,136.3 s | **301.2 s** | **3.77x** | 198.6 | 58.4 | 2,716.3 s (**9.02x**) |
+| `max_tokens` | c1m tok/s | stock tok/s | c1m vs stock | bf16 tok/s | c1m vs bf16 | wall time: c1m / stock / bf16 | time ratio vs stock / bf16 |
+|---|---:|---:|---:|---:|---:|---|---|
+| 128 | **82.2** | 34.7 | **2.37x** | 15.4 | **5.32x** | 116.0 s / 268.6 s / 593.4 s | 2.32x / 5.12x |
+| 512 | **159.4** | 52.0 | **3.07x** | 20.8 | **7.65x** | 205.2 s / 623.1 s / 1,497.5 s | 3.04x / 7.30x |
+| 2048 | **198.6** | 58.4 | **3.40x** | 24.1 | **8.23x** | 301.2 s / 1,136.3 s / 2,716.3 s | 3.77x / 9.02x |
 
-The bf16 column is the original Qwen3.8-27B bf16 model on stock vLLM 0.31.0 (MTP k=3, prefix caching on): **a single run**, on the other A100 of the same machine as the c1m runs (all other arms ran on one GPU). Its KV cache holds 248,680 tokens at 131,072 context; its prefix-cache hit rate was 0.95, the same as the other arms. The multiples against bf16 are the largest multi-turn numbers here (9.02x at `max_tokens` 2048); against the fastest stock setting the multiples are 2.32x / 3.04x / 3.77x.
+The bf16 column is the original Qwen3.8-27B bf16 model on stock vLLM 0.31.0 (MTP k=3, prefix caching on): **a single run**, on the other A100 of the same machine as the c1m runs (all other arms ran on one GPU). Its KV cache holds 248,680 tokens at 131,072 context; its prefix-cache hit rate was 0.95, the same as the other arms. The speed multiples are ratios of output tokens per second over the whole run (prefill included); the time ratios can differ because the runs emit different numbers of tokens (c1m at `max_tokens` 2048: 59,821 tokens for c1m, 66,346 for stock, 65,536 for bf16). The multiples against bf16 are the largest multi-turn numbers here (8.23x at `max_tokens` 2048); against the fastest stock setting they are 2.37x / 3.07x / 3.40x.
 
 **c32m, trace v5-c32** (32 sessions x 7 turns, 2k to 10.5k tokens)
 
-| `max_tokens` | stock vLLM | c32m | speedup | c32m tok/s | stock tok/s | original bf16 + vLLM (c32m is faster by) |
-|---|---:|---:|---:|---:|---:|---:|
-| 128 | 115.1 s | **73.4 s** | **1.57x** | 386.3 | 245.5 | 399.8 s (**5.45x**) |
-| 512 | 184.3 s | **117.6 s** | **1.57x** | 857.3 | 543.5 | 569.7 s (**4.84x**) |
-| 2048 | 314.0 s | **199.1 s** | **1.58x** | 1,096.1 | 719.2 | 771.8 s (**3.88x**) |
+| `max_tokens` | c32m tok/s | stock tok/s | c32m vs stock | bf16 tok/s | c32m vs bf16 | wall time: c32m / stock / bf16 | time ratio vs stock / bf16 |
+|---|---:|---:|---:|---:|---:|---|---|
+| 128 | **386.3** | 245.5 | **1.57x** | 71.0 | **5.44x** | 73.4 s / 115.1 s / 399.8 s | 1.57x / 5.45x |
+| 512 | **857.3** | 543.5 | **1.58x** | 175.6 | **4.88x** | 117.6 s / 184.3 s / 569.7 s | 1.57x / 4.84x |
+| 2048 | **1,096.1** | 719.2 | **1.52x** | 293.5 | **3.73x** | 199.1 s / 314.0 s / 771.8 s | 1.58x / 3.88x |
 
-The bf16 column is the original Qwen3.8-27B bf16 model on stock vLLM 0.31.0 (MTP k=3, prefix caching on): **a single run** on the same GPU as the other arms. Its weights leave a KV cache of only 185,586 tokens, smaller than the working set of 32 sessions, so its prefix cache thrashed: **0% hit rate and 6 / 88 / 126 preemptions** at caps 128 / 512 / 2048. That is part of why the gap to bf16 is large (largest at `max_tokens` 128: 5.45x); against the fastest stock INT4 setting the multiples are 1.57x / 1.57x / 1.58x.
+The bf16 column is the original Qwen3.8-27B bf16 model on stock vLLM 0.31.0 (MTP k=3, prefix caching on): **a single run** on the same GPU as the other arms. Its weights leave a KV cache of only 185,586 tokens, smaller than the working set of 32 sessions, so its prefix cache thrashed: **0% hit rate and 6 / 88 / 126 preemptions** at caps 128 / 512 / 2048. That is part of why the gap to bf16 is large (largest at `max_tokens` 128: 5.44x); against the fastest stock INT4 setting the multiples are 1.57x / 1.58x / 1.52x. The speed multiples are ratios of output tokens per second over the whole run (prefill included); the time ratios can differ because the runs emit different numbers of tokens (c32m at `max_tokens` 2048: 218,240 tokens for c32m, 225,850 for stock, 226,530 for bf16).
 
 **c32m, older trace v4** (32 sessions x 6 turns, prompts up to about 9k tokens; stock = fastest of FLASH_ATTN / TRITON_ATTN with MTP k=3). The first row set was measured on an earlier, unrotated C32 bundle
 (3 reps, GPU1); the rotated c32m bundle was measured at caps 128 / 512 only (2 reps, GPU0, so the ratios against the GPU1 stock numbers are indicative).
@@ -198,11 +197,11 @@ The bf16 column is the original Qwen3.8-27B bf16 model on stock vLLM 0.31.0 (MTP
 | 512 | 118.1 s | 78.7 s | 1.50x | 78.8 s (~1.50x) |
 | 2048 | 189.2 s | 130.5 s | 1.45x | not measured |
 
-**Why the c1m gap grows with output length, and why c32m does not.** At c=1 the gap grows from 2.32x to 3.04x to 3.77x because the two phases of a trace speed up by different amounts and the decode share grows with `max_tokens`.
+**Why the c1m gap grows with output length, and why c32m does not.** At c=1 the tok/s multiple against the fastest stock setting grows from 2.37x to 3.07x to 3.40x (by wall time: 2.32x to 3.04x to 3.77x) because the two phases of a trace speed up by different amounts and the decode share grows with `max_tokens`.
 Splitting the wall time into the summed time-to-first-token (prefill) and the rest (generation): prefill is 84.3 s / 84.5 s / 84.7 s for c1m against 130.4 s / 130.2 s / 131.0 s for stock, a flat **1.55x**, while
-the generation phase is 31.7 / 120.7 / 216.5 s against 138.2 / 492.9 / 1,005.3 s, **4.1x-4.6x**. Prefill is 73% of the c1m run at `max_tokens` 128 and 28% at 2048, so the blend moves from 2.3x toward 4x as outputs get longer.
+the generation phase is 31.7 / 120.7 / 216.5 s against 138.2 / 492.9 / 1,005.3 s, **4.1x-4.6x**. Prefill is 73% of the c1m run at `max_tokens` 128 and 28% at 2048, so the wall-time blend moves from 2.3x toward 4x as outputs get longer (these phase figures are wall time).
 This works because stock vLLM here decodes without speculation, while c1m verifies a 16-node token tree per step.
-At c=32 the ratio is flat at about 1.57x-1.58x for all three caps. With 32 sessions in flight, prefill chunks and decode steps share the same GPU steps, so there is no clean prefill/decode split like the one above, and
+At c=32 the tok/s multiple is flat: 1.57x / 1.58x / 1.52x for the three caps (wall time: 1.57x-1.58x). With 32 sessions in flight, prefill chunks and decode steps share the same GPU steps, so there is no clean prefill/decode split like the one above, and
 **we have not measured why the ratio stays flat**; the stock baseline at c=32 already decodes with MTP speculation and large batches, which narrows the decode-side gap that drives the c1m growth, but that is a hypothesis, not a measurement.
 
 ### Power and energy
@@ -218,7 +217,7 @@ NVML at 1 Hz on the same GPU, energy from the GPU counter, measured during the s
 | c32m J per output token (stock) | 1.15 (1.79) | 0.48 (0.76) | 0.35 (0.54) |
 | c32m average power (stock) | 444 W (441 W) | 414 W (409 W) | 387 W (387 W) |
 
-At c=1 atdev-serve draws 15-25% more power than stock because the GPU is busier, but the run is 2.3-3.8x shorter. Peak GPU temperature stayed at 70-73 C and the SM clock at 1410 MHz (a power-cap throttle flag appeared briefly in the c1m runs).
+At c=1 atdev-serve draws 15-25% more power than stock because the GPU is busier, but the run is 2.3-3.8x shorter in wall time. Peak GPU temperature stayed at 70-73 C and the SM clock at 1410 MHz (a power-cap throttle flag appeared briefly in the c1m runs).
 Single-request decoding (96 prompts): c1m 426-431 W and 1.20 J/token, c1s 437-439 W and 1.18 J/token, stock vLLM 328 W and 1.80 J/token.
 
 ### Replies the server generated itself
@@ -272,11 +271,11 @@ Only greedy decoding is qualified; sampling at higher temperatures is not valida
 | Weights used | INT4 target + W3 overlay (12.5 GB) + d16 drafter (1.35 GB) | same (c1s accuracy: INT4 + drafter only) | INT4 target + Hadamard sidecar (about 12.5 GB), built-in MTP | same as c32m |
 | Speculation | DFlash2 block 16, 16-node token tree | same | built-in MTP k=3, confidence-scheduled verify | same |
 | Single-request / aggregate speed (96 prompts) | 394.4 tok/s per request | 408.9 tok/s per request | n/a | 2,688.1 aggregate tok/s |
-| Multi-turn speed vs best stock vLLM | 2.32x / 3.04x / 3.77x (`max_tokens` 128 / 512 / 2048) | not designed for it | 1.57x / 1.57x / 1.58x | not designed for it |
+| Multi-turn speed vs best stock vLLM (output tok/s) | 2.37x / 3.07x / 3.40x (`max_tokens` 128 / 512 / 2048) | not designed for it | 1.57x / 1.58x / 1.52x | not designed for it |
 | Start-up | kernel builds on first start (12-16 min on our machine), then about 2 min; JIT warmup runs in the background | same without warmup | same as c1m, 32-way warmup | same as c1s |
 | Optional end-of-reply checkpoint | yes, neutral at c=1 | n/a | yes (3% more memory) | n/a |
 
-Rule of thumb from the measurements: if a prefix repeats, the `m` profile wins by a wide margin (c1m is 2.3x-3.8x faster on long conversations). If every request is independent and short, `s` is 3.7% faster (c1: 409.5 vs 394.4 mean decode tok/s)
+Rule of thumb from the measurements: if a prefix repeats, the `m` profile wins by a wide margin (c1m is 2.4x-3.4x faster on long conversations). If every request is independent and short, `s` is 3.7% faster (c1: 409.5 vs 394.4 mean decode tok/s)
 and has more KV room. c1m therefore costs little when it is not needed.
 
 ## Context length
@@ -404,7 +403,7 @@ flowchart LR
 | Tokenization cache (`ATDEV_TOK_CACHE`) | engine | Per-segment tokenization of the growing history | not separately measured |
 | Start-up warmup (`atdev_serve.warmup`) | engine | Synthetic conversations compile the Triton kernels before the first request | a 3-turn probe: 9.5 s -> 4.8 s with an empty Triton cache |
 
-All together, c1m is 2.32x / 3.04x / 3.77x faster than the fastest stock setting on the 111k-token trace (`max_tokens` 128 / 512 / 2048). Optional, off by default: an end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`) that also saves the server's own reply (neutral at c=1 on the measured traces).
+All together, c1m is 2.37x / 3.07x / 3.40x faster (output tok/s) than the fastest stock setting on the 111k-token trace (`max_tokens` 128 / 512 / 2048). Optional, off by default: an end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`) that also saves the server's own reply (neutral at c=1 on the measured traces).
 
 ### c32m (32 clients, multi-turn): shared prefixes across 32 growing conversations
 
@@ -429,7 +428,7 @@ flowchart LR
 | Tokenization cache (`ATDEV_TOK_CACHE`) | engine | Per-segment tokenization of the growing history | neutral on the C32 trace |
 | Start-up warmup with 32-way waves | engine | Compiles the batch-shape kernels before the first request | removed a +5% first-run penalty |
 
-All together, c32m is 1.57x / 1.57x / 1.58x faster than the fastest stock setting on the v5-c32 trace. Optional, off by default: the end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`: 3-12% faster on live conversations, 1.3-2.7% slower where replies cannot be reused, 3% more GPU memory).
+All together, c32m is 1.57x / 1.58x / 1.52x faster (output tok/s) than the fastest stock setting on the v5-c32 trace (`max_tokens` 128 / 512 / 2048). Optional, off by default: the end-of-reply checkpoint (`ATDEV_EOR_CKPT=1`: 3-12% faster on live conversations, 1.3-2.7% slower where replies cannot be reused, 3% more GPU memory).
 
 More detail, the step-time breakdown and the full milestone history are in
 [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
