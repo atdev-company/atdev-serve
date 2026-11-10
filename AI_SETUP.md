@@ -22,7 +22,7 @@ conversation and prefills only what is new), **s** = single-turn (independent re
 | **c32m** | `c32m` | a shared team assistant or a fleet of agents, many conversations that each grow turn by turn | `./serve.sh c32m` |
 | **c32s** | `c32s` | batch jobs and API traffic made of many independent requests (summarize 1,000 documents, evaluation runs, a public endpoint) | `./serve.sh c32s` |
 
-If the user wants the best measured broad accuracy for single-user work and accepts a lower speed, offer an **accuracy variant** (no 3-bit overlay, same drafter): **c1m-accuracy** (`STACK=c1m-accuracy`, `./serve.sh c1m-accuracy`) for growing conversations, or **c1s-accuracy** (`STACK=c1s-accuracy`, `./serve.sh c1s-accuracy`; `./serve_c1_accuracy.sh` still works) for independent short prompts. c1s-accuracy runs at 357 tok/s with benchmark scores within about 0.3-0.6 points of stock on MMLU-Pro and Korean knowledge; c1m-accuracy was measured at `max_tokens` 512 only (126.9 output tok/s on the 111k trace, 2.44x the fastest stock setting).
+If the user wants the best measured broad accuracy for single-user work and accepts a lower speed, offer an **accuracy variant** (no 3-bit overlay, same drafter): **c1m-accuracy** (`STACK=c1m-accuracy`, `./serve.sh c1m-accuracy`) for growing conversations, or **c1s-accuracy** (`STACK=c1s-accuracy`, `./serve.sh c1s-accuracy`; `./serve_c1_accuracy.sh` still works) for independent short prompts. c1s-accuracy runs at 357 tok/s with benchmark scores within about 0.3-0.6 points of stock on MMLU-Pro and Korean knowledge; c1m-accuracy runs int8 prefill GEMMs built from the INT4 weights (+24 GB GPU memory) and measured 75.5 / 146.5 / 183.6 output tok/s at `max_tokens` 128 / 512 / 2048 on the 111k trace (2.18x / 2.82x / 3.14x the fastest stock setting).
 If the user is unsure and has one user: `c1m`. It costs about 3.6% on short unrelated prompts (394.4 vs 409.5 mean decode tok/s over 96 prompts) and is much faster whenever a prefix repeats.
 
 Measured facts to base the choice on (all on one A100 80GB, vLLM 0.31.0, greedy, full stack; details in [README.md](README.md) and [docs/MULTITURN.md](docs/MULTITURN.md)):
@@ -31,7 +31,7 @@ Measured facts to base the choice on (all on one A100 80GB, vLLM 0.31.0, greedy,
 * c1s: 408.9 tok/s mean decode per request, 2.08x the best stock vLLM (196.5).
 * c32m: 32 concurrent 7-turn sessions reach 386.3 / 857.3 / 1,096.1 aggregate output tok/s against 245.5 / 543.5 / 719.2 for the fastest stock setting (1.57x / 1.58x / 1.52x; wall time 73.4 / 117.6 / 199.1 s against 115.1 / 184.3 / 314.0 s).
 * c32s: 2,688.1 aggregate output tok/s, 1.53x the best stock vLLM (single measured run).
-* KV cache: measured in the server log at start-up: c1m 284,160 tokens at its 131,072-token window; c1m-accuracy 518,963 at 131,072; c1s 172,398 at 8,192 (c1s-accuracy 166,803); c32m 514,755 at 16,384; c32s 423,424 at 8,192. c1m has the largest cache of the two single-user setups.
+* KV cache: measured in the server log at start-up: c1m 284,160 tokens at its 131,072-token window; c1m-accuracy 249,856 at 131,072; c1s 172,398 at 8,192 (c1s-accuracy 166,803); c32m 514,755 at 16,384; c32s 423,424 at 8,192. c1m has the largest cache of the two single-user setups.
 
 ## The four setups
 
@@ -54,7 +54,7 @@ Each setup is a separate, self-contained recipe: pick **one**, set `STACK` to it
 ### Setups c1m-accuracy and c1s-accuracy: c1m / c1s without the 3-bit overlay (`STACK=c1m-accuracy`, `STACK=c1s-accuracy`)
 
 * **Fits:** the same workloads as c1m / c1s when closeness to stock INT4 accuracy matters more than speed.
-* **What you get:** c1m-accuracy: prefix caching and the 131,072-token window of c1m, 518,963 KV tokens, measured at `max_tokens` 512 only (250.2 s and 126.9 output tok/s on the 111k trace, slower than c1m because the int8 prefill paths exist only for the W3 weights). c1s-accuracy: 357.17 tok/s decode per request, 8,192-token window, 166,803 KV tokens, no prefix caching.
+* **What you get:** c1m-accuracy: prefix caching and the 131,072-token window of c1m, 249,856 KV tokens (c1m: 284,160), int8 prefill GEMMs built at load from the INT4 weights (about 24 GB more GPU memory; the log shows `atdev i4_i8: mode i8`); 75.5 / 146.5 / 183.6 output tok/s at `max_tokens` 128 / 512 / 2048 on the 111k trace, a little slower than c1m (159.4 at 512). c1s-accuracy: 357.17 tok/s decode per request, 8,192-token window, 166,803 KV tokens, no prefix caching.
 * **Downloads:** INT4 target (19 GB) + drafter (1.35 GB) from `atdev-company/Qwen3.8-27B-atdev-c1`; the 12.5 GB W3 overlay is not downloaded.
 
 ### Setup c32m: many users, multi-turn (`STACK=c32m`)

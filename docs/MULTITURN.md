@@ -56,7 +56,15 @@ dequantized prefill weights take GPU memory that the previous multi-turn build l
 
 ### c1m-accuracy: the same trace without the 3-bit overlay
 
-`./serve.sh c1m-accuracy` is the multi-turn C1 stack with no W3 overlay (and without the W3-only prefill flags). Only `max_tokens` 512 was measured: the 111k-token trace ran in 250.2 s, 126.9 output tok/s, which is 2.44x the fastest stock setting (52.0 tok/s) and 6.1x the bf16 default (20.8 tok/s). It is slower than c1m at the same cap (159.4 output tok/s) because the int8 prefill paths exist only for W3 weights. The launch holds 518,963 KV tokens at `--max-model-len 131072` (c1m: 284,160), because the dequantized prefill weights are not kept. There are no numbers for caps 128 and 2048. Accuracy scores are in [ACCURACY.md](ACCURACY.md).
+`./serve.sh c1m-accuracy` is the multi-turn C1 stack with no W3 overlay. Its prefill GEMMs run as int8 GEMMs on a copy of the INT4 weights built at load time (per-output-channel scales; the copy approximates the weights by about 0.9% and is used for prefill only; decode keeps the INT4 kernels). The copy takes about 24 GB of GPU memory, so the launch holds 249,856 KV tokens at `--max-model-len 131072` (c1m: 284,160).
+
+| Output cap per turn | c1m-accuracy output tok/s | wall time | vs fastest stock (34.7 / 52.0 / 58.4) | vs bf16 (15.4 / 20.8 / 24.1) |
+|---|---:|---:|---:|---:|
+| 128 (1 run) | 75.5 | 124.1 s | 2.18x | 4.90x |
+| 512 (median of 2) | 146.5 | 214.5 s | 2.82x | 7.04x |
+| 2048 (1 run) | 183.6 | 344.3 s | 3.14x | 7.62x |
+
+Single A100 (GPU0) for c1m-accuracy; the stock arms ran on the other A100. At `max_tokens` 512 it is 8% below c1m (159.4 output tok/s). Accuracy scores are in [ACCURACY.md](ACCURACY.md).
 
 ## C32: 32 concurrent sessions
 

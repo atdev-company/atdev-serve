@@ -249,27 +249,27 @@ The stock reference of the c1s / c32s columns is the mean of two stock runs; the
 
 | Metric | stock INT4 (mean of 2) | c1s fast | c1s accuracy | c1m accuracy | c32s | stock INT4 (1 run) | c1m | c32m |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| MMLU-Pro | 71.71% | 69.14% | 71.43% | 71.36% | 72.79% | 71.5% | 69.0% | 71.4% |
-| KMMLU Korean | 66.84% | 63.91% | 66.22% | 67.20% | 65.07% | 67.1% | 63.8% | 67.6% |
-| IFEval prompt strict | 82.90% | 82.07% | 82.99% | 82.81% | 82.44% | 83.4% | 81.3% | 81.4% (mean of 3 runs) |
-| IFEval prompt loose | 86.60% | 84.84% | 86.32% | 86.14% | 86.51% | 87.1% | 83.7% | 84.6% (mean of 3) |
+| MMLU-Pro | 71.71% | 69.14% | 71.43% | 70.71% | 72.79% | 71.5% | 69.0% | 71.4% |
+| KMMLU Korean | 66.84% | 63.91% | 66.22% | 65.60% | 65.07% | 67.1% | 63.8% | 67.6% |
+| IFEval prompt strict | 82.90% | 82.07% | 82.99% | 82.44% | 82.44% | 83.4% | 81.3% | 81.4% (mean of 3 runs) |
+| IFEval prompt loose | 86.60% | 84.84% | 86.32% | 85.95% | 86.51% | 87.1% | 83.7% | 84.6% (mean of 3) |
 | HumanEval / HumanEval+ | 95.73 / 90.85% | 94.51 / 88.41% | 95.73 / 91.46% | 95.73 / 90.85% | 95.12 / 89.63% | 95.1 / 90.2% | 95.1 / 90.2% | 94.5 / 89.0% |
-| MBPP / MBPP+ | 91.27 / 76.46% | 89.68 / 75.66% | 92.06 / 76.98% | 92.33 / 77.51% | 92.06 / 78.04% | 91.5 / 76.7% | 88.1 / 75.4% | 89.4 / 75.9% |
-| WikiText-2 perplexity | 7.299 | 8.220 | 7.300 | 7.3001 | 7.209 | 7.299 | 8.282 | 7.365 |
-| GSM8K, all 1319 | 94.31% | 95.00% | 94.77% | 94.31% | 94.69% | 94.31% | 94.24% | 94.39% |
-| GSM8K, first 300 | n/a | 96.67% | 97.00% | 96.33% | n/a | n/a | 96.67% (96.33% re-run on this tree) | 97.0% / 95.3% (shared / unique prefix); 96.33% re-run on this tree |
+| MBPP / MBPP+ | 91.27 / 76.46% | 89.68 / 75.66% | 92.06 / 76.98% | 91.01 / 75.66% | 92.06 / 78.04% | 91.5 / 76.7% | 88.1 / 75.4% | 89.4 / 75.9% |
+| WikiText-2 perplexity | 7.299 | 8.220 | 7.300 | 7.338 | 7.209 | 7.299 | 8.282 | 7.365 |
+| GSM8K, all 1319 | 94.31% | 95.00% | 94.77% | 94.84% | 94.69% | 94.31% | 94.24% | 94.39% |
+| GSM8K, first 300 | n/a | 96.67% | 97.00% | 97.33% | n/a | n/a | 96.67% (96.33% re-run on this tree) | 97.0% / 95.3% (shared / unique prefix); 96.33% re-run on this tree |
 | long-context retrieval (36 items) | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 | 36/36 |
 
 **Gap to stock, per profile**
 
-* **c1m and c1s fast keep the 3-bit overlay's gap:** MMLU-Pro **-2.5** (c1m) / -2.6 (c1s), KMMLU **-3.3** (c1m) / -2.9 (c1s), MBPP -3.4 (c1m); perplexity 8.2-8.3 against 7.3. This is the price of the speed; c1s accuracy (no overlay) is within about 0.3 points of stock on MMLU-Pro and 0.6 on KMMLU, at 357 tok/s. c1m accuracy (multi-turn, no overlay) is within 0.4 points of stock on MMLU-Pro (71.36 against 71.71), +0.4 on KMMLU, and has the same perplexity (7.3001 against 7.299).
+* **c1m and c1s fast keep the 3-bit overlay's gap:** MMLU-Pro **-2.5** (c1m) / -2.6 (c1s), KMMLU **-3.3** (c1m) / -2.9 (c1s), MBPP -3.4 (c1m); perplexity 8.2-8.3 against 7.3. This is the price of the speed; c1s accuracy (no overlay) is within about 0.3 points of stock on MMLU-Pro and 0.6 on KMMLU, at 357 tok/s. c1m accuracy (multi-turn, no overlay, int8 prefill copy) is 1.0 point below stock on MMLU-Pro (70.71 against 71.71) and 1.2 below on KMMLU (65.60 against 66.84), with perplexity 7.338 against 7.299 and GSM8K-1319 94.84 against 94.31 (gate passed).
   The gap does not come from multi-turn caching: c1m matches c1s fast within the noise of these sample sizes.
 * **c32s and c32m** are in the accuracy class of stock INT4: c32m MMLU-Pro -0.1, KMMLU +0.5, HumanEval+ -1.2, perplexity +0.07; **IFEval prompt strict is 2.0 points below stock** (81.4 against 83.4) and varies by up to about 4 points from run to run.
 * One configuration's Korean-knowledge score varies by about 1.4 points between runs (n=1,125); differences below about 1.5 points need several runs.
 
 The c32m profile and the single-turn Hadamard profile use the same rotated weights; c32m adds a rotation-aware 4-bit prefill GEMM. Without the rotation that GEMM cost perplexity 7.96 and 2-4 points on MMLU-Pro / KMMLU / HumanEval+ (see [docs/TECHNIQUES.md](docs/TECHNIQUES.md)).
 Pass rule of the original gates: GSM8K within 1 point of the matching stock vLLM reference and long-context 36/36. Passing these narrow gates does not establish unchanged broad accuracy.
-c1m accuracy was measured with the research-run launcher on tree 7d95f19 (the same configuration `./serve.sh c1m-accuracy` starts).
+c1m accuracy was measured on the release tree through `./serve.sh c1m-accuracy` itself (fresh install, same harness as the other columns). Its prefill runs int8 GEMMs on a copy of the INT4 weights that approximates them by about 0.9% (prefill only), so its numerics differ slightly from the INT4 model; this is why its scores differ from c1s-accuracy.
 Complete tables, sample sizes and limits: [docs/ACCURACY.md](docs/ACCURACY.md) and [docs/MULTITURN.md](docs/MULTITURN.md#accuracy-of-the-multi-turn-profiles).
 Only greedy decoding is qualified; sampling at higher temperatures is not validated in this release.
 
@@ -300,12 +300,12 @@ and has more KV room. c1m therefore costs little when it is not needed.
 |---|---|---|
 | Start | `./serve.sh c1m-accuracy` (Docker profile `c1m-accuracy`) | `./serve.sh c1s-accuracy` (same as `./serve_c1_accuracy.sh`; Docker profile `c1s-accuracy`) |
 | Context window (default) | 131,072 | 8,192 |
-| KV cache at that window | 518,963 tokens (measured) | 166,803 tokens (measured) |
+| KV cache at that window | 249,856 tokens (measured; c1m: 284,160) | 166,803 tokens (measured) |
 | Weights | INT4 target + d16 drafter, no W3 overlay | same |
 | Prefix caching | yes (as c1m) | no |
-| Measured speed | 111k-token agent trace at `max_tokens` 512 (the only cap measured): 250.2 s, 126.9 output tok/s, 2.44x the fastest stock vLLM (52.0 tok/s) and 6.1x the bf16 default (20.8 tok/s) | 357.17 tok/s mean decode per request, 1.82x best stock vLLM |
+| Measured speed | 75.5 / 146.5 / 183.6 output tok/s at `max_tokens` 128 / 512 / 2048 on the 111k-token agent trace, which is 2.18x / 2.82x / 3.14x the fastest stock vLLM and 4.90x / 7.04x / 7.62x the bf16 default (512: median of 2 repetitions; 128 and 2048: one run each; the stock arms ran on the other A100) | 357.17 tok/s mean decode per request, 1.82x best stock vLLM |
 
-Trade-off versus c1m: c1m-accuracy is slower on the same trace (126.9 against 159.4 output tok/s at `max_tokens` 512), because the int8 prefill paths exist only for the W3 weights, and it holds a larger KV cache because it does not keep the dequantized prefill weights. The multi-turn speed of c1m-accuracy was measured at 512 only; there are no numbers for other caps.
+Trade-off versus c1m: c1m-accuracy is slower on the same trace at `max_tokens` 512 (146.5 against 159.4 output tok/s, 8% lower), and its KV cache is slightly smaller (249,856 against 284,160 tokens). Its prefill runs int8 GEMMs built at load time from the INT4 weights, a copy that takes about 24 GB of extra GPU memory; the copy approximates the weights (about 0.9%, prefill only), so its numerics differ slightly from the INT4 model. Decode keeps the INT4 kernels. Scores are in [Accuracy and validation](#accuracy-and-validation).
 
 ## Context length
 
